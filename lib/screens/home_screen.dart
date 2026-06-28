@@ -57,6 +57,17 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings, color: Colors.white38),
+            onPressed: () => Navigator.pushNamed(context, '/settings'),
+          ),
+        ],
+      ),
+      extendBodyBehindAppBar: true,
       body: Stack(
         children: [
           // Dark gradient background
@@ -126,21 +137,24 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   child: Column(
                     children: [
                       _ModeCard(
+                        icon: Icons.auto_awesome,
+                        title: 'AI Edit',
+                        subtitle:
+                            'Grok AI se bilkul natural\nLCD display edit',
+                        color: const Color(0xFFFFD600),
+                        badge: 'BEST',
+                        onTap: () =>
+                            Navigator.pushNamed(context, '/ai-edit'),
+                      ),
+                      const SizedBox(height: 14),
+                      _ModeCard(
                         icon: Icons.offline_bolt,
                         title: 'Offline Edit',
-                        subtitle: 'Fast & simple editing\nNo internet needed',
+                        subtitle:
+                            'Internet ke baghair\nText overlay editing',
                         color: const Color(0xFF00E5FF),
                         onTap: () =>
                             Navigator.pushNamed(context, '/offline-edit'),
-                      ),
-                      const SizedBox(height: 16),
-                      _ModeCard(
-                        icon: Icons.auto_awesome,
-                        title: 'AI Perfect Mode',
-                        subtitle:
-                            'High quality AI result\nPhotorealistic editing',
-                        color: const Color(0xFFFFD600),
-                        onTap: () => Navigator.pushNamed(context, '/ai-mode'),
                       ),
                     ],
                   ),
@@ -180,6 +194,7 @@ class _ModeCard extends StatelessWidget {
   final String title;
   final String subtitle;
   final Color color;
+  final String? badge;
   final VoidCallback onTap;
 
   const _ModeCard({
@@ -187,6 +202,7 @@ class _ModeCard extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.color,
+    this.badge,
     required this.onTap,
   });
 
@@ -227,13 +243,36 @@ class _ModeCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      title,
-                      style: GoogleFonts.orbitron(
-                        fontSize: 17,
-                        fontWeight: FontWeight.bold,
-                        color: color,
-                      ),
+                    Row(
+                      children: [
+                        Text(
+                          title,
+                          style: GoogleFonts.orbitron(
+                            fontSize: 17,
+                            fontWeight: FontWeight.bold,
+                            color: color,
+                          ),
+                        ),
+                        if (badge != null) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: color,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              badge!,
+                              style: const TextStyle(
+                                color: Colors.black,
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                     const SizedBox(height: 4),
                     Text(

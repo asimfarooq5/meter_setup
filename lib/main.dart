@@ -4,7 +4,8 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'screens/home_screen.dart';
 import 'screens/offline_edit_screen.dart';
 import 'screens/history_screen.dart';
-import 'screens/ai_mode_screen.dart';
+import 'screens/ai_edit_screen.dart';
+import 'screens/settings_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -47,9 +48,10 @@ class MeterSetProApp extends StatelessWidget {
       initialRoute: '/',
       routes: {
         '/': (context) => const HomeScreen(),
+        '/ai-edit': (context) => const AiEditScreen(),
         '/offline-edit': (context) => const OfflineEditScreen(),
         '/history': (context) => const HistoryScreen(),
-        '/ai-mode': (context) => const AIModeScreen(),
+        '/settings': (context) => const SettingsScreen(),
       },
     );
   }
