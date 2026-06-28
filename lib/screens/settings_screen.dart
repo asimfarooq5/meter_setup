@@ -34,11 +34,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveKey() async {
     final key = _keyController.text.trim();
     if (key.isEmpty) {
-      _snack('Please enter your xAI API key');
+      _snack('API key darj karein');
       return;
     }
-    if (!key.startsWith('sk-')) {
-      _snack('Key "sk-" se shuru honi chahiye — check your key');
+    if (!key.startsWith('hf_')) {
+      _snack('"hf_" se shuru honi chahiye — huggingface.co se copy karein');
       return;
     }
     setState(() => _saving = true);
@@ -47,7 +47,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _saving = false;
       _hasKey = true;
     });
-    _snack('API key saved!');
+    _snack('✓ API key save ho gayi!');
   }
 
   Future<void> _clearKey() async {
@@ -55,9 +55,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A1A),
-        title: Text('Remove API Key?',
+        title: Text('Key Hatao?',
             style: GoogleFonts.poppins(color: Colors.white)),
-        content: Text('Your xAI API key will be deleted from this device.',
+        content: Text('HuggingFace API key is device se delete ho jaegi.',
             style: GoogleFonts.poppins(color: Colors.white70)),
         actions: [
           TextButton(
@@ -67,8 +67,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child:
-                Text('Remove', style: GoogleFonts.poppins(color: Colors.red)),
+            child: Text('Hatao',
+                style: GoogleFonts.poppins(color: Colors.red)),
           ),
         ],
       ),
@@ -77,7 +77,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await GrokService.instance.clearApiKey();
       _keyController.clear();
       setState(() => _hasKey = false);
-      _snack('API key removed');
+      _snack('API key hata di gayi');
     }
   }
 
@@ -110,11 +110,56 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Status banner
+
+            // ── Free badge ─────────────────────────────────────────────────
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              margin: const EdgeInsets.only(bottom: 20),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    const Color(0xFF00E5FF).withOpacity(0.12),
+                    const Color(0xFF4CAF50).withOpacity(0.08),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: const Color(0xFF4CAF50).withOpacity(0.4)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.money_off_rounded,
+                      color: Color(0xFF4CAF50), size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('100% FREE — Koi payment nahi!',
+                            style: GoogleFonts.poppins(
+                              color: const Color(0xFF4CAF50),
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            )),
+                        Text(
+                          'HuggingFace free tier — unlimited free requests\n'
+                          '(rate limited, thoda slow but bilkul free)',
+                          style: GoogleFonts.poppins(
+                              color: Colors.white54, fontSize: 11, height: 1.4),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // ── Active key banner ──────────────────────────────────────────
             if (_hasKey)
               Container(
                 padding: const EdgeInsets.all(14),
-                margin: const EdgeInsets.only(bottom: 24),
+                margin: const EdgeInsets.only(bottom: 20),
                 decoration: BoxDecoration(
                   color: Colors.green.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(10),
@@ -126,33 +171,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const Icon(Icons.check_circle,
                         color: Colors.green, size: 20),
                     const SizedBox(width: 10),
-                    Text('OpenAI API key set hai — AI Edit active hai',
+                    Text('HuggingFace key set hai — AI Edit ready!',
                         style: GoogleFonts.poppins(
                             color: Colors.green, fontSize: 13)),
                   ],
                 ),
               ),
 
-            // Title
-            Text('OpenAI API Key',
+            // ── Title ──────────────────────────────────────────────────────
+            Text('HuggingFace API Key',
                 style: GoogleFonts.orbitron(
                     fontSize: 16, color: const Color(0xFF00E5FF))),
             const SizedBox(height: 6),
             Text(
-              'AI Edit ke liye zaruri. platform.openai.com se milegi.',
+              'huggingface.co par FREE account banao — key milegi.',
               style:
                   GoogleFonts.poppins(color: Colors.white38, fontSize: 12),
             ),
             const SizedBox(height: 16),
 
-            // Key input
+            // ── Key input ──────────────────────────────────────────────────
             TextField(
               controller: _keyController,
               obscureText: _obscure,
               style: GoogleFonts.sourceCodePro(
                   color: Colors.white, fontSize: 13),
               decoration: InputDecoration(
-                hintText: 'sk-proj-xxxxxxxxxxxxxxxxxxxxxxxx',
+                hintText: 'hf_xxxxxxxxxxxxxxxxxxxxxxxx',
                 hintStyle: GoogleFonts.sourceCodePro(
                     color: Colors.white24, fontSize: 13),
                 filled: true,
@@ -183,7 +228,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 14),
 
-            // Save button
+            // ── Save button ────────────────────────────────────────────────
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
@@ -196,7 +241,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             strokeWidth: 2, color: Colors.black),
                       )
                     : const Icon(Icons.save_rounded),
-                label: Text(_saving ? 'Saving...' : 'Save API Key',
+                label: Text(_saving ? 'Saving...' : 'Save Key',
                     style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF00E5FF),
@@ -214,7 +259,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onPressed: _clearKey,
                   icon: const Icon(Icons.delete_outline,
                       color: Colors.red, size: 18),
-                  label: Text('Remove API Key',
+                  label: Text('Key Hatao',
                       style: GoogleFonts.poppins(color: Colors.red)),
                   style: OutlinedButton.styleFrom(
                     side: BorderSide(color: Colors.red.withOpacity(0.4)),
@@ -224,82 +269,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ],
 
-            const SizedBox(height: 36),
+            const SizedBox(height: 32),
             const Divider(color: Colors.white12),
             const SizedBox(height: 20),
 
-            // How to get key
-            Text('OpenAI API Key Kaise Milegi?',
+            // ── Steps ──────────────────────────────────────────────────────
+            Text('Free API Key Kaise Milegi?',
                 style: GoogleFonts.poppins(
                     color: Colors.white70,
                     fontSize: 14,
                     fontWeight: FontWeight.w600)),
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
+            _Step(n: '1', text: 'huggingface.co par jao'),
             _Step(
-              n: '1',
-              text: 'platform.openai.com par jao',
-            ),
-            _Step(n: '2', text: 'Account banao ya login karo (free signup)'),
+                n: '2',
+                text: '"Sign Up" — bilkul free, email se ho jaata hai'),
             _Step(
                 n: '3',
                 text:
-                    '"API Keys" section → "Create new secret key" button dabao'),
-            _Step(n: '4', text: 'Key copy karo (sirf ek baar dikhti hai!)'),
-            _Step(n: '5', text: 'Yahaan paste karo → Save!'),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFF00E5FF).withOpacity(0.05),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                    color: const Color(0xFF00E5FF).withOpacity(0.2)),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Icon(Icons.info_outline,
-                      color: Color(0xFF00E5FF), size: 18),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'Models used:\n'
-                      '• gpt-image-1 (best quality)\n'
-                      '• dall-e-2 (fallback)\n'
-                      '• dall-e-3 + gpt-4o vision (last resort)\n\n'
-                      'Ek image edit mein ~\$0.04–0.08 kharch hota hai.',
-                      style: GoogleFonts.poppins(
-                          color: Colors.white54,
-                          fontSize: 11,
-                          height: 1.6),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+                    'Top right → Profile → "Settings" → "Access Tokens"'),
+            _Step(
+                n: '4',
+                text: '"New token" → Type: "Read" → Generate'),
+            _Step(n: '5', text: 'Copy karo → yahaan paste karo → Save!'),
 
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
+
+            // ── Info box ───────────────────────────────────────────────────
             Container(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: const Color(0xFFFFD600).withOpacity(0.06),
-                borderRadius: BorderRadius.circular(8),
+                color: const Color(0xFFFFD600).withOpacity(0.05),
+                borderRadius: BorderRadius.circular(10),
                 border: Border.all(
                     color: const Color(0xFFFFD600).withOpacity(0.2)),
               ),
-              child: Row(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(Icons.lock_outline,
-                      color: Color(0xFFFFD600), size: 18),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'API key sirf aapke phone par store hoti hai. '
-                      'Kisi server ya internet par nahi jaati.',
-                      style: GoogleFonts.poppins(
-                          color: Colors.white54, fontSize: 12, height: 1.5),
-                    ),
+                  Row(
+                    children: [
+                      const Icon(Icons.info_outline,
+                          color: Color(0xFFFFD600), size: 16),
+                      const SizedBox(width: 8),
+                      Text('Zaruri maloomat',
+                          style: GoogleFonts.poppins(
+                              color: const Color(0xFFFFD600),
+                              fontWeight: FontWeight.w600,
+                              fontSize: 12)),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '• Model use: instruct-pix2pix (bilkul free)\n'
+                    '• Pehli baar thoda slow hoga (model load hoti hai ~20s)\n'
+                    '• Baad mein faster ho jaata hai\n'
+                    '• Key sirf aapke phone par store hoti hai\n'
+                    '• Koi hidden charge nahi',
+                    style: GoogleFonts.poppins(
+                        color: Colors.white54,
+                        fontSize: 11,
+                        height: 1.7),
                   ),
                 ],
               ),
@@ -319,16 +349,18 @@ class _Step extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            width: 22,
-            height: 22,
+            width: 24,
+            height: 24,
             decoration: BoxDecoration(
               color: const Color(0xFF00E5FF).withOpacity(0.15),
               shape: BoxShape.circle,
+              border: Border.all(
+                  color: const Color(0xFF00E5FF).withOpacity(0.3)),
             ),
             child: Center(
               child: Text(n,
@@ -338,7 +370,7 @@ class _Step extends StatelessWidget {
                       fontWeight: FontWeight.bold)),
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 12),
           Expanded(
             child: Text(text,
                 style: GoogleFonts.poppins(

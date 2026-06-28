@@ -527,7 +527,7 @@ class _ApiKeyBanner extends StatelessWidget {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                'xAI API key nahi mili — Settings mein darj karein',
+                'HuggingFace API key nahi mili — Settings mein darj karein',
                 style:
                     GoogleFonts.poppins(color: Colors.red, fontSize: 12),
               ),
