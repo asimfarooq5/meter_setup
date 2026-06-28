@@ -4,12 +4,14 @@ import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// Wraps OpenAI image-editing API (gpt-image-1 / dall-e-2).
+/// Replaces meter LCD display numbers naturally in the original photo.
 class GrokService {
   static final GrokService instance = GrokService._();
   GrokService._();
 
-  static const String _apiKeyPref = 'xai_api_key';
-  static const String _baseUrl = 'https://api.x.ai/v1';
+  static const String _apiKeyPref = 'openai_api_key';
+  static const String _baseUrl = 'https://api.openai.com/v1';
 
   // ── API key storage ───────────────────────────────────────────────────────
 
@@ -28,42 +30,62 @@ class GrokService {
     await prefs.remove(_apiKeyPref);
   }
 
-  // ── Main edit function ────────────────────────────────────────────────────
+  // ── Main entry point ──────────────────────────────────────────────────────
 
-  /// Sends [imageBytes] to Grok API and returns edited image bytes
-  /// where the LCD display shows [desiredReading].
   Future<Uint8List> editMeterReading({
     required Uint8List imageBytes,
     required String desiredReading,
     required String apiKey,
   }) async {
-    // Try image-edit endpoint first (preserves original image best)
+    // Primary: gpt-image-1 inpainting (best quality, understands context)
     try {
-      return await _callImageEdit(imageBytes, desiredReading, apiKey);
-    } catch (editErr) {
-      // Fallback: vision analysis → image generation
+      return await _imageEdit(
+        imageBytes: imageBytes,
+        reading: desiredReading,
+        apiKey: apiKey,
+        model: 'gpt-image-1',
+      );
+    } catch (e1) {
+      // Fallback: dall-e-2 edit endpoint
       try {
-        return await _callVisionThenGenerate(
-            imageBytes, desiredReading, apiKey);
-      } catch (genErr) {
-        throw GrokException(
-          'Image editing failed.\n'
-          'Edit error: $editErr\n'
-          'Generate error: $genErr',
+        return await _imageEdit(
+          imageBytes: imageBytes,
+          reading: desiredReading,
+          apiKey: apiKey,
+          model: 'dall-e-2',
         );
+      } catch (e2) {
+        // Last resort: vision analysis → dall-e-3 generation
+        try {
+          return await _visionThenGenerate(
+            imageBytes: imageBytes,
+            reading: desiredReading,
+            apiKey: apiKey,
+          );
+        } catch (e3) {
+          throw AiEditException(
+            'Sab tarike fail ho gaye.\n'
+            'gpt-image-1: $e1\n'
+            'dall-e-2: $e2\n'
+            'generation: $e3',
+          );
+        }
       }
     }
   }
 
-  // ── Approach 1: /v1/images/edits (inpainting) ────────────────────────────
+  // ── Approach 1: /v1/images/edits ─────────────────────────────────────────
 
-  Future<Uint8List> _callImageEdit(
-    Uint8List imageBytes,
-    String reading,
-    String apiKey,
-  ) async {
-    final uri = Uri.parse('$_baseUrl/images/edits');
-    final request = http.MultipartRequest('POST', uri)
+  Future<Uint8List> _imageEdit({
+    required Uint8List imageBytes,
+    required String reading,
+    required String apiKey,
+    required String model,
+  }) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$_baseUrl/images/edits'),
+    )
       ..headers['Authorization'] = 'Bearer $apiKey'
       ..files.add(http.MultipartFile.fromBytes(
         'image',
@@ -71,28 +93,30 @@ class GrokService {
         filename: 'meter.png',
         contentType: MediaType('image', 'png'),
       ))
-      ..fields['model'] = 'aurora'
-      ..fields['prompt'] = _buildEditPrompt(reading)
+      ..fields['model'] = model
+      ..fields['prompt'] = _editPrompt(reading)
       ..fields['n'] = '1'
+      ..fields['size'] = '1024x1024'
       ..fields['response_format'] = 'b64_json';
 
-    final streamed = await request.send().timeout(const Duration(seconds: 90));
+    final streamed =
+        await request.send().timeout(const Duration(seconds: 120));
     final response = await http.Response.fromStream(streamed);
     _assertOk(response);
-    return _extractImage(response.body);
+    return _extractB64Image(response.body);
   }
 
-  // ── Approach 2: vision → text → image generation ─────────────────────────
+  // ── Approach 2: vision → dall-e-3 generation ─────────────────────────────
 
-  Future<Uint8List> _callVisionThenGenerate(
-    Uint8List imageBytes,
-    String reading,
-    String apiKey,
-  ) async {
+  Future<Uint8List> _visionThenGenerate({
+    required Uint8List imageBytes,
+    required String reading,
+    required String apiKey,
+  }) async {
     final b64 = base64Encode(imageBytes);
 
-    // Step A: vision model describes the meter in detail
-    final visionRes = await http
+    // Step A: GPT-4o vision — describe the meter in detail
+    final vRes = await http
         .post(
           Uri.parse('$_baseUrl/chat/completions'),
           headers: {
@@ -100,41 +124,40 @@ class GrokService {
             'Content-Type': 'application/json',
           },
           body: jsonEncode({
-            'model': 'grok-2-vision-1212',
+            'model': 'gpt-4o',
             'messages': [
               {
                 'role': 'user',
                 'content': [
                   {
                     'type': 'image_url',
-                    'image_url': {
-                      'url': 'data:image/png;base64,$b64',
-                    },
+                    'image_url': {'url': 'data:image/png;base64,$b64'},
                   },
                   {
                     'type': 'text',
                     'text':
-                        'Describe this electricity meter in detail: brand, model, color, '
-                            'body shape, label text, wire colors, background wall, and the '
-                            'exact style/color of the LCD display digits. Be very specific '
-                            'so that someone could recreate it exactly.',
+                        'Describe this electricity meter in precise photographic detail: '
+                        'brand, model label, body color and material, shape, '
+                        'mounting screws, LED indicators (color/position), '
+                        'wire colors, wall/background, and especially the LCD display '
+                        '(digit color, glow, background color, size, position). '
+                        'Be very specific — this description will be used to recreate it.',
                   },
                 ],
               },
             ],
-            'max_tokens': 500,
+            'max_tokens': 600,
           }),
         )
         .timeout(const Duration(seconds: 30));
+    _assertOk(vRes);
 
-    _assertOk(visionRes);
-    final visionJson =
-        jsonDecode(visionRes.body) as Map<String, dynamic>;
-    final description = (visionJson['choices'] as List)
-        .first['message']['content'] as String;
+    final vJson = jsonDecode(vRes.body) as Map<String, dynamic>;
+    final description =
+        (vJson['choices'] as List).first['message']['content'] as String;
 
-    // Step B: generate image with the description + new reading
-    final genRes = await http
+    // Step B: DALL-E 3 — generate with new reading
+    final gRes = await http
         .post(
           Uri.parse('$_baseUrl/images/generations'),
           headers: {
@@ -142,58 +165,65 @@ class GrokService {
             'Content-Type': 'application/json',
           },
           body: jsonEncode({
-            'model': 'aurora',
+            'model': 'dall-e-3',
             'prompt': 'Photorealistic photograph of an electricity meter. '
-                'Meter description: $description. '
-                'IMPORTANT: The LCD digital display must clearly show the reading '
-                '"$reading" kWh in the exact same font, color, and style as described. '
-                'Everything else must match the description exactly.',
+                'Exact description: $description. '
+                'CRITICAL: The LCD digital display must show the reading '
+                '"$reading kWh" in the exact same digit color, font, and style '
+                'as described. Everything else must be identical to the description.',
             'n': 1,
+            'size': '1024x1024',
+            'quality': 'hd',
             'response_format': 'b64_json',
           }),
         )
         .timeout(const Duration(seconds: 90));
-
-    _assertOk(genRes);
-    return _extractImage(genRes.body);
+    _assertOk(gRes);
+    return _extractB64Image(gRes.body);
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
-  String _buildEditPrompt(String reading) =>
-      'Edit this electricity meter photo. '
-      'Change ONLY the LCD digital display to show the reading: $reading kWh. '
-      'The digits must look like real LCD segments — same color, brightness, '
-      'and style as the original display. '
-      'Keep the meter body, brand label, indicator LEDs, wires, screws, '
-      'and background wall completely unchanged. '
-      'The result must look like a genuine unmodified photograph.';
+  String _editPrompt(String reading) =>
+      'Edit ONLY the LCD digital display of this electricity meter. '
+      'Replace the current reading with: $reading kWh. '
+      'The new digits must match the original LCD style exactly — '
+      'same segment color, brightness, background, and font weight. '
+      'Do NOT change anything else: meter body, brand labels, LED indicators, '
+      'screws, wires, or background wall must remain pixel-perfect. '
+      'The result must look like an authentic unedited photograph.';
 
   void _assertOk(http.Response res) {
-    if (res.statusCode != 200) {
-      String msg = 'HTTP ${res.statusCode}';
-      try {
-        final body = jsonDecode(res.body) as Map<String, dynamic>;
-        msg = body['error']?['message'] as String? ?? msg;
-      } catch (_) {}
-      throw GrokException(msg);
-    }
+    if (res.statusCode == 200) return;
+    String msg = 'HTTP ${res.statusCode}';
+    try {
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      msg = (body['error'] as Map?)?['message'] as String? ?? msg;
+    } catch (_) {}
+    throw AiEditException(msg);
   }
 
-  Uint8List _extractImage(String responseBody) {
+  Uint8List _extractB64Image(String responseBody) {
     final json = jsonDecode(responseBody) as Map<String, dynamic>;
-    final data = json['data'] as List;
-    if (data.isEmpty) throw GrokException('No image returned from API');
+    final data = json['data'] as List?;
+    if (data == null || data.isEmpty) {
+      throw AiEditException('API ne koi image return nahi ki');
+    }
     final b64 = data.first['b64_json'] as String?;
-    if (b64 == null) throw GrokException('API returned no image data');
+    if (b64 == null || b64.isEmpty) {
+      throw AiEditException('API response mein image data nahi mila');
+    }
     return base64Decode(b64);
   }
 }
 
-class GrokException implements Exception {
+class AiEditException implements Exception {
   final String message;
-  const GrokException(this.message);
+  const AiEditException(this.message);
 
   @override
   String toString() => message;
 }
+
+// Keep old name as alias so nothing else breaks
+typedef GrokException = AiEditException;

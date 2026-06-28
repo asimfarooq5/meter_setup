@@ -37,8 +37,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _snack('Please enter your xAI API key');
       return;
     }
-    if (!key.startsWith('xai-')) {
-      _snack('Key should start with "xai-" — check your key');
+    if (!key.startsWith('sk-')) {
+      _snack('Key "sk-" se shuru honi chahiye — check your key');
       return;
     }
     setState(() => _saving = true);
@@ -126,7 +126,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const Icon(Icons.check_circle,
                         color: Colors.green, size: 20),
                     const SizedBox(width: 10),
-                    Text('xAI API key is set — AI Edit is active',
+                    Text('OpenAI API key set hai — AI Edit active hai',
                         style: GoogleFonts.poppins(
                             color: Colors.green, fontSize: 13)),
                   ],
@@ -134,12 +134,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
 
             // Title
-            Text('xAI (Grok) API Key',
+            Text('OpenAI API Key',
                 style: GoogleFonts.orbitron(
                     fontSize: 16, color: const Color(0xFF00E5FF))),
             const SizedBox(height: 6),
             Text(
-              'Required for AI Edit feature. Get your key from console.x.ai',
+              'AI Edit ke liye zaruri. platform.openai.com se milegi.',
               style:
                   GoogleFonts.poppins(color: Colors.white38, fontSize: 12),
             ),
@@ -152,7 +152,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: GoogleFonts.sourceCodePro(
                   color: Colors.white, fontSize: 13),
               decoration: InputDecoration(
-                hintText: 'xai-xxxxxxxxxxxxxxxxxxxxxxxx',
+                hintText: 'sk-proj-xxxxxxxxxxxxxxxxxxxxxxxx',
                 hintStyle: GoogleFonts.sourceCodePro(
                     color: Colors.white24, fontSize: 13),
                 filled: true,
@@ -229,7 +229,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 20),
 
             // How to get key
-            Text('API Key Kaise Milega?',
+            Text('OpenAI API Key Kaise Milegi?',
                 style: GoogleFonts.poppins(
                     color: Colors.white70,
                     fontSize: 14,
@@ -237,14 +237,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 12),
             _Step(
               n: '1',
-              text: 'console.x.ai par jao (xAI ka developer console)',
+              text: 'platform.openai.com par jao',
             ),
-            _Step(n: '2', text: 'Account banao ya login karo'),
+            _Step(n: '2', text: 'Account banao ya login karo (free signup)'),
             _Step(
                 n: '3',
-                text: '"API Keys" section mein jao → "Create API Key"'),
-            _Step(
-                n: '4', text: 'Key copy karo → yahaan paste karo → Save!'),
+                text:
+                    '"API Keys" section → "Create new secret key" button dabao'),
+            _Step(n: '4', text: 'Key copy karo (sirf ek baar dikhti hai!)'),
+            _Step(n: '5', text: 'Yahaan paste karo → Save!'),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF00E5FF).withOpacity(0.05),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: const Color(0xFF00E5FF).withOpacity(0.2)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.info_outline,
+                      color: Color(0xFF00E5FF), size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Models used:\n'
+                      '• gpt-image-1 (best quality)\n'
+                      '• dall-e-2 (fallback)\n'
+                      '• dall-e-3 + gpt-4o vision (last resort)\n\n'
+                      'Ek image edit mein ~\$0.04–0.08 kharch hota hai.',
+                      style: GoogleFonts.poppins(
+                          color: Colors.white54,
+                          fontSize: 11,
+                          height: 1.6),
+                    ),
+                  ),
+                ],
+              ),
+            ),
 
             const SizedBox(height: 24),
             Container(
