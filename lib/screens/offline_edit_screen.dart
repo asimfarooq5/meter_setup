@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import '../models/history_item.dart';
+import '../models/meter_template.dart';
 import '../services/storage_service.dart';
 
 class OfflineEditScreen extends StatefulWidget {
@@ -29,6 +30,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
   bool _hasBg = true;
   bool _isSaving = false;
   bool _showDragHint = true;
+  MeterTemplate _selectedTemplate = MeterTemplate.presets.first;
 
   BannerAd? _bannerAd;
   bool _isBannerAdLoaded = false;
@@ -45,11 +47,12 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
   int _editCount = 0;
 
   static const List<Color> _colorOptions = [
-    Color(0xFF4CAF50), // LCD Green
-    Color(0xFFFFBF00), // LCD Amber
+    Color(0xFF4CAF50),
+    Color(0xFFFFBF00),
     Colors.white,
-    Color(0xFF00E5FF), // Cyan
-    Color(0xFFFF5252), // Red
+    Color(0xFF00E5FF),
+    Color(0xFFFF5252),
+    Color(0xFF448AFF),
     Colors.black,
   ];
 
@@ -58,6 +61,15 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     super.initState();
     _loadBannerAd();
     _loadInterstitialAd();
+  }
+
+  void _applyTemplate(MeterTemplate t) {
+    setState(() {
+      _selectedTemplate = t;
+      _textColor = t.displayColor;
+      _fontSize = t.fontSize;
+      _hasBg = t.hasBg;
+    });
   }
 
   void _loadBannerAd() {
@@ -132,7 +144,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
       final Uint8List pngBytes = byteData.buffer.asUint8List();
       final dir = await getTemporaryDirectory();
       final String stamp = DateTime.now().millisecondsSinceEpoch.toString();
-      final String filePath = '${dir.path}/meter_$stamp.png';
+      final String filePath = '\${dir.path}/meter_\$stamp.png';
       await File(filePath).writeAsBytes(pngBytes);
 
       await StorageService.instance.addHistory(HistoryItem(
@@ -143,13 +155,13 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
 
       await Share.shareXFiles(
         [XFile(filePath)],
-        text: 'Meter Reading: ${_readingController.text.trim()} kWh\n'
+        text: 'Meter Reading: \${_readingController.text.trim()} kWh\n'
             'Edited with MeterSet Pro',
       );
 
       _showInterstitialIfReady();
     } catch (e) {
-      _showSnack('Error saving: $e');
+      _showSnack('Error saving: \$e');
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
@@ -200,87 +212,168 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     );
   }
 
-  // ── Step 1: Pick photo ──────────────────────────────────────────────────────
-
-  Widget _buildPickerView() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: const Color(0xFF00E5FF).withOpacity(0.08),
-                shape: BoxShape.circle,
+  Widget _buildTemplateSelector() {
+    return Container(
+      color: const Color(0xFF0F0F0F),
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.style, color: Colors.white38, size: 13),
+              const SizedBox(width: 5),
+              Text(
+                'Display Template',
+                style: GoogleFonts.poppins(
+                    color: Colors.white38, fontSize: 11),
               ),
-              child: const Icon(Icons.photo_camera,
-                  size: 64, color: Color(0xFF00E5FF)),
-            ),
-            const SizedBox(height: 24),
-            Text(
-              'Select Meter Photo',
-              style: GoogleFonts.orbitron(
-                  fontSize: 20, color: const Color(0xFF00E5FF)),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Choose the meter photo you want to edit the reading on',
-              textAlign: TextAlign.center,
-              style: GoogleFonts.poppins(color: Colors.white38, fontSize: 13),
-            ),
-            const SizedBox(height: 40),
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () => _pickImage(ImageSource.camera),
-                    icon: const Icon(Icons.camera_alt),
-                    label:
-                        Text('Camera', style: GoogleFonts.poppins(fontSize: 15)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF00E5FF),
-                      foregroundColor: Colors.black,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
+            ],
+          ),
+          const SizedBox(height: 7),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: MeterTemplate.presets.map((t) {
+                final isSelected = _selectedTemplate.id == t.id;
+                return GestureDetector(
+                  onTap: () => _applyTemplate(t),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 180),
+                    margin: const EdgeInsets.only(right: 8),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? t.displayColor.withOpacity(0.18)
+                          : const Color(0xFF1A1A1A),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: isSelected ? t.displayColor : Colors.white12,
+                        width: isSelected ? 1.5 : 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 9,
+                          height: 9,
+                          decoration: BoxDecoration(
+                            color: t.displayColor,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          t.name,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: isSelected
+                                ? t.displayColor
+                                : Colors.white54,
+                            fontWeight: isSelected
+                                ? FontWeight.w600
+                                : FontWeight.normal,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () => _pickImage(ImageSource.gallery),
-                    icon: const Icon(Icons.photo_library),
-                    label:
-                        Text('Gallery', style: GoogleFonts.poppins(fontSize: 15)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF1A1A1A),
-                      foregroundColor: Colors.white,
-                      side: const BorderSide(color: Color(0xFF00E5FF)),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                    ),
-                  ),
-                ),
-              ],
+                );
+              }).toList(),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  // ── Step 2: Edit + Controls ─────────────────────────────────────────────────
+  Widget _buildPickerView() {
+    return Column(
+      children: [
+        _buildTemplateSelector(),
+        Expanded(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF00E5FF).withOpacity(0.08),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.photo_camera,
+                        size: 64, color: Color(0xFF00E5FF)),
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    'Select Meter Photo',
+                    style: GoogleFonts.orbitron(
+                        fontSize: 20, color: const Color(0xFF00E5FF)),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Choose the meter photo you want to edit the reading on',
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.poppins(
+                        color: Colors.white38, fontSize: 13),
+                  ),
+                  const SizedBox(height: 40),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () => _pickImage(ImageSource.camera),
+                          icon: const Icon(Icons.camera_alt),
+                          label: Text('Camera',
+                              style: GoogleFonts.poppins(fontSize: 15)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF00E5FF),
+                            foregroundColor: Colors.black,
+                            padding:
+                                const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () => _pickImage(ImageSource.gallery),
+                          icon: const Icon(Icons.photo_library),
+                          label: Text('Gallery',
+                              style: GoogleFonts.poppins(fontSize: 15)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF1A1A1A),
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(
+                                color: Color(0xFF00E5FF)),
+                            padding:
+                                const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   Widget _buildEditorView() {
     return Column(
       children: [
-        // Reading input bar
+        _buildTemplateSelector(),
         _buildReadingInputBar(),
-        // Image canvas
         Expanded(child: _buildImageCanvas()),
-        // Controls
         _buildControlsPanel(),
-        // Banner Ad
         if (_isBannerAdLoaded && _bannerAd != null)
           SizedBox(
             width: _bannerAd!.size.width.toDouble(),
@@ -301,7 +394,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
         keyboardType:
             const TextInputType.numberWithOptions(decimal: true),
         style: GoogleFonts.orbitron(
-          color: const Color(0xFF4CAF50),
+          color: _textColor,
           fontSize: 22,
           letterSpacing: 3,
         ),
@@ -314,27 +407,24 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
           ),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFF4CAF50)),
+            borderSide: BorderSide(color: _textColor),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
-            borderSide:
-                BorderSide(color: const Color(0xFF4CAF50).withOpacity(0.4)),
+            borderSide: BorderSide(color: _textColor.withOpacity(0.4)),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
-            borderSide:
-                const BorderSide(color: Color(0xFF4CAF50), width: 2),
+            borderSide: BorderSide(color: _textColor, width: 2),
           ),
           filled: true,
           fillColor: Colors.black,
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           suffixText: 'kWh',
-          suffixStyle: GoogleFonts.orbitron(
-              color: Colors.white30, fontSize: 11),
-          prefixIcon:
-              const Icon(Icons.speed, color: Color(0xFF4CAF50), size: 20),
+          suffixStyle:
+              GoogleFonts.orbitron(color: Colors.white30, fontSize: 11),
+          prefixIcon: Icon(Icons.speed, color: _textColor, size: 20),
         ),
         onChanged: (_) => setState(() {}),
         onTap: () => setState(() => _showDragHint = false),
@@ -351,14 +441,12 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
             key: _repaintKey,
             child: Stack(
               children: [
-                // Meter image
                 Positioned.fill(
                   child: Image.file(
                     _selectedImage!,
                     fit: BoxFit.contain,
                   ),
                 ),
-                // Draggable text overlay
                 if (_readingController.text.isNotEmpty)
                   Positioned(
                     left: _overlayPosition.dx,
@@ -392,7 +480,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
                             fontSize: _fontSize,
                             color: _textColor,
                             fontWeight: FontWeight.bold,
-                            letterSpacing: 2,
+                            letterSpacing: _selectedTemplate.letterSpacing,
                             shadows: [
                               Shadow(
                                 color: _textColor.withOpacity(0.7),
@@ -404,7 +492,6 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
                       ),
                     ),
                   ),
-                // Drag hint
                 if (_showDragHint && _readingController.text.isNotEmpty)
                   Positioned(
                     bottom: 8,
@@ -448,7 +535,6 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
       child: Column(
         children: [
-          // Font size row
           Row(
             children: [
               const Icon(Icons.text_fields, color: Colors.white38, size: 16),
@@ -459,11 +545,10 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
               Expanded(
                 child: SliderTheme(
                   data: SliderThemeData(
-                    activeTrackColor: const Color(0xFF00E5FF),
+                    activeTrackColor: _textColor,
                     inactiveTrackColor: Colors.white24,
-                    thumbColor: const Color(0xFF00E5FF),
-                    overlayColor:
-                        const Color(0xFF00E5FF).withOpacity(0.2),
+                    thumbColor: _textColor,
+                    overlayColor: _textColor.withOpacity(0.2),
                     trackHeight: 2,
                     thumbShape:
                         const RoundSliderThumbShape(enabledThumbRadius: 8),
@@ -477,13 +562,12 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
                 ),
               ),
               Text(
-                '${_fontSize.round()}',
+                '\${_fontSize.round()}',
                 style: GoogleFonts.orbitron(
                     color: Colors.white38, fontSize: 10),
               ),
             ],
           ),
-          // Color + BG row
           Row(
             children: [
               Text('Color:',
@@ -501,8 +585,9 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
                       color: c,
                       shape: BoxShape.circle,
                       border: Border.all(
-                        color:
-                            _textColor == c ? Colors.white : Colors.white24,
+                        color: _textColor == c
+                            ? Colors.white
+                            : Colors.white24,
                         width: _textColor == c ? 2.5 : 1,
                       ),
                     ),
@@ -525,7 +610,6 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
             ],
           ),
           const SizedBox(height: 6),
-          // Save/Share button
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(

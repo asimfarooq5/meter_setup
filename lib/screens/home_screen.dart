@@ -9,7 +9,8 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
+class _HomeScreenState extends State<HomeScreen>
+    with TickerProviderStateMixin {
   BannerAd? _bannerAd;
   bool _isBannerAdLoaded = false;
   late AnimationController _glowController;
@@ -60,17 +61,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings, color: Colors.white38),
-            onPressed: () => Navigator.pushNamed(context, '/settings'),
-          ),
-        ],
+        automaticallyImplyLeading: false,
       ),
       extendBodyBehindAppBar: true,
       body: Stack(
         children: [
-          // Dark gradient background
           Container(
             decoration: const BoxDecoration(
               gradient: LinearGradient(
@@ -84,7 +79,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
             ),
           ),
-          // Subtle grid pattern
           Positioned.fill(
             child: CustomPaint(painter: _GridPainter()),
           ),
@@ -92,7 +86,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             child: Column(
               children: [
                 const SizedBox(height: 40),
-                // Logo + title
                 AnimatedBuilder(
                   animation: _glowAnimation,
                   builder: (context, _) => Column(
@@ -100,7 +93,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       Icon(
                         Icons.electric_bolt,
                         size: 64,
-                        color: Color(0xFF00E5FF).withOpacity(_glowAnimation.value),
+                        color: Color(0xFF00E5FF)
+                            .withOpacity(_glowAnimation.value),
                       ),
                       const SizedBox(height: 12),
                       Text(
@@ -131,7 +125,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   ),
                 ),
                 const SizedBox(height: 52),
-                // Mode cards
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: Column(
@@ -140,7 +133,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                         icon: Icons.auto_awesome,
                         title: 'AI Edit',
                         subtitle:
-                            'Grok AI se bilkul natural\nLCD display edit',
+                            'HuggingFace AI se bilkul natural\nLCD display edit',
                         color: const Color(0xFFFFD600),
                         badge: 'BEST',
                         onTap: () =>
@@ -160,18 +153,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   ),
                 ),
                 const Spacer(),
-                // History button
-                TextButton.icon(
-                  onPressed: () => Navigator.pushNamed(context, '/history'),
-                  icon: const Icon(Icons.history, color: Colors.white38),
-                  label: Text(
-                    'Edit History',
-                    style: GoogleFonts.poppins(
-                        color: Colors.white38, fontSize: 13),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                // AdMob Banner
                 if (_isBannerAdLoaded && _bannerAd != null)
                   SizedBox(
                     width: _bannerAd!.size.width.toDouble(),
@@ -219,7 +200,8 @@ class _ModeCard extends StatelessWidget {
           decoration: BoxDecoration(
             color: const Color(0xFF141414),
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: color.withOpacity(0.35), width: 1.5),
+            border: Border.all(
+                color: color.withOpacity(0.35), width: 1.5),
             boxShadow: [
               BoxShadow(
                 color: color.withOpacity(0.08),
@@ -253,7 +235,7 @@ class _ModeCard extends StatelessWidget {
                             color: color,
                           ),
                         ),
-                        if (badge != null) ...[
+                        if (badge != null) ...[  
                           const SizedBox(width: 8),
                           Container(
                             padding: const EdgeInsets.symmetric(

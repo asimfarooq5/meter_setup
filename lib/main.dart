@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
-import 'screens/home_screen.dart';
-import 'screens/offline_edit_screen.dart';
-import 'screens/history_screen.dart';
+import 'screens/main_screen.dart';
 import 'screens/ai_edit_screen.dart';
-import 'screens/settings_screen.dart';
+import 'screens/offline_edit_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -30,7 +28,8 @@ class MeterSetProApp extends StatelessWidget {
           secondary: Color(0xFFFFD600),
           surface: Color(0xFF1A1A1A),
         ),
-        textTheme: GoogleFonts.poppinsTextTheme(ThemeData.dark().textTheme),
+        textTheme:
+            GoogleFonts.poppinsTextTheme(ThemeData.dark().textTheme),
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFF00E5FF),
@@ -45,13 +44,10 @@ class MeterSetProApp extends StatelessWidget {
           contentTextStyle: TextStyle(color: Colors.white),
         ),
       ),
-      initialRoute: '/',
+      home: const MainScreen(),
       routes: {
-        '/': (context) => const HomeScreen(),
         '/ai-edit': (context) => const AiEditScreen(),
         '/offline-edit': (context) => const OfflineEditScreen(),
-        '/history': (context) => const HistoryScreen(),
-        '/settings': (context) => const SettingsScreen(),
       },
     );
   }
