@@ -174,6 +174,177 @@ class GrokService {
       'Keep the entire meter body, brand label, LED indicators, '
       'screws, wires, and wall background completely unchanged. '
       'The final result must look like a genuine unedited photograph.';
+
+  // ── Free automatic fallback (no API key needed) ──────────────────────────
+  // Calls the public Gradio API of public HF Spaces — the same demos a
+  // browser would hit — no login, no key, no scraping of chat UIs, just
+  // each Space's documented public API. These are anonymous ZeroGPU Spaces,
+  // which share a limited free GPU quota across ALL anonymous visitors
+  // worldwide, so calls can randomly fail with "quota exceeded" even when
+  // our code is correct. We try a strong model first, then fall back to an
+  // older, usually-less-contended one before giving up.
+
+  Future<Uint8List> editMeterReadingFree({
+    required Uint8List imageBytes,
+    required String desiredReading,
+  }) async {
+    final b64 = base64Encode(imageBytes);
+
+    try {
+      return await _callGradioSpace(
+        host: 'https://black-forest-labs-flux-1-kontext-dev.hf.space',
+        endpoint: 'infer',
+        data: [
+          _imageField(b64),
+          'Change ONLY the LCD digital display number to read '
+              '"$desiredReading" instead of the current number, keeping the '
+              'exact same font style, segment style, and everything else in '
+              'the photo (meter body, scratches, marker writing, screws, '
+              'wires, background) completely unchanged.',
+          0,
+          true,
+          2.5,
+          28,
+        ],
+        resultIndex: 0,
+      );
+    } catch (primaryError) {
+      try {
+        return await _callGradioSpace(
+          host: 'https://timbrooks-instruct-pix2pix.hf.space',
+          endpoint: 'generate',
+          data: [
+            _imageField(b64),
+            'Change the LCD digital display number to show $desiredReading. '
+                'Keep the meter body, wires, and background exactly the same.',
+            30,
+            'Fix Seed',
+            42,
+            'Fix CFG',
+            7.5,
+            1.5,
+          ],
+          resultIndex: 3,
+        );
+      } catch (fallbackError) {
+        throw AiEditException(
+            'Free public AI demos abhi busy hain (anonymous quota khatam '
+            'ho gaya, yeh shared hota hai sabhi users mein). Thodi der baad '
+            'phir try karein, ya Settings mein apni free HuggingFace key '
+            'add karein for reliable results.');
+      }
+    }
+  }
+
+  Map<String, dynamic> _imageField(String b64) => {
+        'path': null,
+        'url': 'data:image/jpeg;base64,$b64',
+        'meta': {'_type': 'gradio.FileData'},
+      };
+
+  Future<Uint8List> _callGradioSpace({
+    required String host,
+    required String endpoint,
+    required List<dynamic> data,
+    required int resultIndex,
+  }) async {
+    final http.Response submitResponse;
+    try {
+      submitResponse = await http
+          .post(
+            Uri.parse('$host/gradio_api/call/$endpoint'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'data': data}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (e) {
+      throw AiEditException('$host tak pahunch nahi payi: $e');
+    }
+
+    if (submitResponse.statusCode != 200) {
+      throw AiEditException(
+          '$host busy hai (HTTP ${submitResponse.statusCode}).');
+    }
+
+    final eventId = (jsonDecode(submitResponse.body)
+        as Map<String, dynamic>)['event_id'] as String?;
+    if (eventId == null) {
+      throw AiEditException('$host ne valid response nahi diya.');
+    }
+
+    final resultData = await _streamGradioResult(host, endpoint, eventId);
+
+    final imageField = resultData[resultIndex] as Map<String, dynamic>;
+    final imageUrl = imageField['url'] as String?;
+    if (imageUrl == null) {
+      throw AiEditException('Result image nahi mili.');
+    }
+
+    final imgResponse = await http
+        .get(Uri.parse(imageUrl))
+        .timeout(const Duration(seconds: 30));
+    if (imgResponse.statusCode != 200 || imgResponse.bodyBytes.isEmpty) {
+      throw AiEditException('Result image download nahi hui.');
+    }
+    return imgResponse.bodyBytes;
+  }
+
+  Future<List<dynamic>> _streamGradioResult(
+      String host, String endpointName, String eventId) async {
+    final client = http.Client();
+    try {
+      final request = http.Request('GET',
+          Uri.parse('$host/gradio_api/call/$endpointName/$eventId'));
+      final streamedResponse = await client.send(request);
+
+      final completer = Completer<List<dynamic>>();
+      String eventName = '';
+      final sub = streamedResponse.stream
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) {
+        if (line.startsWith('event:')) {
+          eventName = line.substring(6).trim();
+        } else if (line.startsWith('data:')) {
+          final dataStr = line.substring(5).trim();
+          if (eventName == 'complete') {
+            try {
+              final parsed = jsonDecode(dataStr) as List<dynamic>;
+              if (!completer.isCompleted) completer.complete(parsed);
+            } catch (e) {
+              if (!completer.isCompleted) {
+                completer.completeError(
+                    AiEditException('$host response parse error: $e'));
+              }
+            }
+          } else if (eventName == 'error') {
+            if (!completer.isCompleted) {
+              completer.completeError(
+                  AiEditException('$host quota/error: $dataStr'));
+            }
+          }
+        }
+      });
+
+      sub.onDone(() {
+        if (!completer.isCompleted) {
+          completer.completeError(
+              AiEditException('$host se result nahi mila.'));
+        }
+      });
+      sub.onError((e) {
+        if (!completer.isCompleted) completer.completeError(e);
+      });
+
+      try {
+        return await completer.future.timeout(const Duration(seconds: 150));
+      } finally {
+        await sub.cancel();
+      }
+    } finally {
+      client.close();
+    }
+  }
 }
 
 class AiEditException implements Exception {

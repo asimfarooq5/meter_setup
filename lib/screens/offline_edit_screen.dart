@@ -144,7 +144,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
       final Uint8List pngBytes = byteData.buffer.asUint8List();
       final dir = await getTemporaryDirectory();
       final String stamp = DateTime.now().millisecondsSinceEpoch.toString();
-      final String filePath = '\${dir.path}/meter_\$stamp.png';
+      final String filePath = '${dir.path}/meter_$stamp.png';
       await File(filePath).writeAsBytes(pngBytes);
 
       await StorageService.instance.addHistory(HistoryItem(
@@ -155,13 +155,13 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
 
       await Share.shareXFiles(
         [XFile(filePath)],
-        text: 'Meter Reading: \${_readingController.text.trim()} kWh\n'
+        text: 'Meter Reading: ${_readingController.text.trim()} kWh\n'
             'Edited with MeterSet Pro',
       );
 
       _showInterstitialIfReady();
     } catch (e) {
-      _showSnack('Error saving: \$e');
+      _showSnack('Error saving: $e');
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
@@ -562,7 +562,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
                 ),
               ),
               Text(
-                '\${_fontSize.round()}',
+                '${_fontSize.round()}',
                 style: GoogleFonts.orbitron(
                     color: Colors.white38, fontSize: 10),
               ),

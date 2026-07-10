@@ -83,16 +83,14 @@ class _AiEditScreenState extends State<AiEditScreen> {
       _snack('Jo reading dikhani hai woh number darj karein');
       return;
     }
-    if (_apiKey == null || _apiKey!.isEmpty) {
-      _snack(
-          'Settings tab se HuggingFace API key add karein, ya neeche browser option use karein');
-      return;
-    }
+    final hasKey = _apiKey != null && _apiKey!.isNotEmpty;
 
     setState(() {
       _loading = true;
       _resultImage = null;
-      _statusMsg = 'Meter image HuggingFace AI ko bhej raha hai...';
+      _statusMsg = hasKey
+          ? 'Meter image HuggingFace AI ko bhej raha hai...'
+          : 'API key nahi mili — free AI demo automatically use ho raha hai...';
     });
 
     try {
@@ -100,11 +98,16 @@ class _AiEditScreenState extends State<AiEditScreen> {
       setState(() => _statusMsg =
           'AI meter ki LCD display edit kar raha hai...\n(30-60 seconds lag sakte hain)');
 
-      final result = await GrokService.instance.editMeterReading(
-        imageBytes: imageBytes,
-        desiredReading: _readingCtrl.text.trim(),
-        apiKey: _apiKey!,
-      );
+      final result = hasKey
+          ? await GrokService.instance.editMeterReading(
+              imageBytes: imageBytes,
+              desiredReading: _readingCtrl.text.trim(),
+              apiKey: _apiKey!,
+            )
+          : await GrokService.instance.editMeterReadingFree(
+              imageBytes: imageBytes,
+              desiredReading: _readingCtrl.text.trim(),
+            );
 
       setState(() {
         _resultImage = result;
@@ -126,7 +129,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
     try {
       final dir = await getTemporaryDirectory();
       final stamp = DateTime.now().millisecondsSinceEpoch;
-      final path = '\${dir.path}/meter_ai_\$stamp.png';
+      final path = '${dir.path}/meter_ai_$stamp.png';
       await File(path).writeAsBytes(_resultImage!);
       await StorageService.instance.addHistory(HistoryItem(
         filePath: path,
@@ -136,10 +139,10 @@ class _AiEditScreenState extends State<AiEditScreen> {
       await Share.shareXFiles(
         [XFile(path)],
         text:
-            'Meter Reading: \${_readingCtrl.text.trim()} kWh\nEdited with MeterSet Pro (AI)',
+            'Meter Reading: ${_readingCtrl.text.trim()} kWh\nEdited with MeterSet Pro (AI)',
       );
     } catch (e) {
-      _snack('Save error: \$e');
+      _snack('Save error: $e');
     }
   }
 
@@ -211,20 +214,37 @@ class _AiEditScreenState extends State<AiEditScreen> {
                 style: GoogleFonts.poppins(
                     color: Colors.white54, fontSize: 12)),
             const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () => launchUrl(Uri.parse('https://grok.com'),
+                    mode: LaunchMode.externalApplication),
+                icon: const Icon(Icons.bolt, size: 16),
+                label: Text('Grok.com (Best Results)',
+                    style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.w600, fontSize: 13)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFFD600),
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
             Row(
               children: [
                 Expanded(
-                  child: ElevatedButton.icon(
+                  child: OutlinedButton.icon(
                     onPressed: () => launchUrl(
                         Uri.parse('https://claude.ai'),
                         mode: LaunchMode.externalApplication),
-                    icon: const Icon(Icons.auto_awesome, size: 15),
+                    icon: const Icon(Icons.auto_awesome,
+                        size: 15, color: Colors.white54),
                     label: Text('Claude.ai',
                         style: GoogleFonts.poppins(
-                            fontWeight: FontWeight.w600, fontSize: 13)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFFFD600),
-                      foregroundColor: Colors.black,
+                            color: Colors.white54, fontSize: 13)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.white24),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                   ),
@@ -309,7 +329,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
           IconButton(
             icon: const Icon(Icons.open_in_browser,
                 color: Colors.white54, size: 22),
-            tooltip: 'Browser se AI Edit',
+            tooltip: 'Manual Fallback (Browser)',
             onPressed: _showBrowserSheet,
           ),
           Padding(
@@ -431,7 +451,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
                       onPressed: _showBrowserSheet,
                       icon: const Icon(Icons.open_in_browser,
                           color: Colors.white54, size: 18),
-                      label: Text('Browser se AI Edit (Claude / ChatGPT)',
+                      label: Text('Manual Fallback (Claude / ChatGPT Browser)',
                           style: GoogleFonts.poppins(
                               color: Colors.white54, fontSize: 13)),
                       style: OutlinedButton.styleFrom(
@@ -586,7 +606,9 @@ class _NoKeyBanner extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'HuggingFace API key nahi mili — app is ke baghair bhi chalti hai',
+                  'HuggingFace API key nahi mili — AI Edit free public demo se '
+                  'automatically chalega (thoda slow, aur kabhi kabhi demo busy '
+                  'hone par retry karna pad sakta hai)',
                   style: GoogleFonts.poppins(
                       color: Colors.orange,
                       fontSize: 12,
@@ -601,7 +623,7 @@ class _NoKeyBanner extends StatelessWidget {
               Expanded(
                 child: _BannerBtn(
                   icon: Icons.settings,
-                  label: 'API Key Add Karo',
+                  label: 'Tez Ke Liye Key Add Karo',
                   color: const Color(0xFF00E5FF),
                   onTap: onSettings,
                 ),
@@ -610,7 +632,7 @@ class _NoKeyBanner extends StatelessWidget {
               Expanded(
                 child: _BannerBtn(
                   icon: Icons.open_in_browser,
-                  label: 'Browser Use Karo',
+                  label: 'Manual Fallback',
                   color: const Color(0xFFFFD600),
                   onTap: onBrowser,
                 ),
