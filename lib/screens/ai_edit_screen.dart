@@ -44,7 +44,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
 
   Future<void> _initApiKey() async {
     final key = await GrokService.instance.getApiKey();
-    setState(() => _apiKey = key);
+    if (mounted) setState(() => _apiKey = key);
   }
 
   void _loadBannerAd() {
@@ -62,11 +62,9 @@ class _AiEditScreenState extends State<AiEditScreen> {
     )..load();
   }
 
-  // ── Pick image ────────────────────────────────────────────────────────────
-
   Future<void> _pickImage(ImageSource source) async {
-    final file = await ImagePicker()
-        .pickImage(source: source, imageQuality: 100);
+    final file =
+        await ImagePicker().pickImage(source: source, imageQuality: 100);
     if (file != null && mounted) {
       setState(() {
         _sourceImage = File(file.path);
@@ -75,8 +73,6 @@ class _AiEditScreenState extends State<AiEditScreen> {
       });
     }
   }
-
-  // ── Run AI edit ───────────────────────────────────────────────────────────
 
   Future<void> _runAiEdit() async {
     if (_sourceImage == null) {
@@ -88,7 +84,8 @@ class _AiEditScreenState extends State<AiEditScreen> {
       return;
     }
     if (_apiKey == null || _apiKey!.isEmpty) {
-      _showNoKeyDialog();
+      _snack(
+          'Settings tab se HuggingFace API key add karein, ya neeche browser option use karein');
       return;
     }
 
@@ -100,7 +97,6 @@ class _AiEditScreenState extends State<AiEditScreen> {
 
     try {
       final imageBytes = await _sourceImage!.readAsBytes();
-
       setState(() => _statusMsg =
           'AI meter ki LCD display edit kar raha hai...\n(30-60 seconds lag sakte hain)');
 
@@ -125,8 +121,6 @@ class _AiEditScreenState extends State<AiEditScreen> {
     }
   }
 
-  // ── Save & Share ──────────────────────────────────────────────────────────
-
   Future<void> _saveAndShare() async {
     if (_resultImage == null) return;
     try {
@@ -134,13 +128,11 @@ class _AiEditScreenState extends State<AiEditScreen> {
       final stamp = DateTime.now().millisecondsSinceEpoch;
       final path = '\${dir.path}/meter_ai_\$stamp.png';
       await File(path).writeAsBytes(_resultImage!);
-
       await StorageService.instance.addHistory(HistoryItem(
         filePath: path,
         reading: _readingCtrl.text.trim(),
         timestamp: DateTime.now(),
       ));
-
       await Share.shareXFiles(
         [XFile(path)],
         text:
@@ -151,26 +143,22 @@ class _AiEditScreenState extends State<AiEditScreen> {
     }
   }
 
-  // ── Browser-based AI fallback ─────────────────────────────────────────────
-
-  void _showBrowserAiSheet() {
+  void _showBrowserSheet() {
     final reading = _readingCtrl.text.trim();
     final prompt = reading.isEmpty
-        ? 'Is meter ki photo mein LCD display ka number _____ kar do. '  
-          'Background, meter body, wires sab same rakhna. '  
-          'Sirf LCD digits change karna.'
-        : 'Is meter ki photo mein LCD display ka number "$reading kWh" '  
-          'kar do. Background, meter body, wires sab same rakhna. '  
-          'Sirf LCD digits change karna. Result bilkul real photo jaisi lagni chahiye.';
+        ? 'Is meter ki photo mein LCD display ka number badal do. '
+            'Sirf digits change karo, baaki sab same rakho.'
+        : 'Is meter ki photo mein LCD display "$reading kWh" kar do. '
+            'Sirf LCD digits change karo — meter body, wires, background sab same rakhna. '
+            'Result bilkul real photo jaisa lagna chahiye.';
 
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF141414),
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -178,22 +166,18 @@ class _AiEditScreenState extends State<AiEditScreen> {
             Row(
               children: [
                 const Icon(Icons.open_in_browser,
-                    color: Color(0xFFFFD600), size: 22),
+                    color: Color(0xFFFFD600), size: 20),
                 const SizedBox(width: 10),
-                Text(
-                  'Browser se AI Edit',
-                  style: GoogleFonts.orbitron(
-                      color: const Color(0xFFFFD600), fontSize: 15),
-                ),
+                Text('Browser se AI Edit',
+                    style: GoogleFonts.orbitron(
+                        color: const Color(0xFFFFD600), fontSize: 14)),
               ],
             ),
             const SizedBox(height: 14),
-            Text(
-              'Step 1: Prompt copy karo',
-              style: GoogleFonts.poppins(
-                  color: Colors.white60, fontSize: 12),
-            ),
-            const SizedBox(height: 8),
+            Text('1. Yeh prompt copy karo:',
+                style: GoogleFonts.poppins(
+                    color: Colors.white54, fontSize: 12)),
+            const SizedBox(height: 6),
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -201,53 +185,43 @@ class _AiEditScreenState extends State<AiEditScreen> {
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: Colors.white12),
               ),
-              child: Text(
-                prompt,
-                style: GoogleFonts.sourceCodePro(
-                    color: Colors.white70, fontSize: 11, height: 1.5),
+              child: Text(prompt,
+                  style: GoogleFonts.sourceCodePro(
+                      color: Colors.white70, fontSize: 11, height: 1.5)),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: prompt));
+                _snack('Prompt copy ho gaya!');
+              },
+              icon: const Icon(Icons.copy, size: 14, color: Colors.white54),
+              label: Text('Prompt Copy Karo',
+                  style: GoogleFonts.poppins(
+                      color: Colors.white54, fontSize: 12)),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.white24),
+                minimumSize: const Size(double.infinity, 40),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
               ),
             ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      Clipboard.setData(ClipboardData(text: prompt));
-                      _snack('Prompt copy ho gaya!');
-                    },
-                    icon: const Icon(Icons.copy,
-                        size: 16, color: Colors.white54),
-                    label: Text('Copy Prompt',
-                        style: GoogleFonts.poppins(
-                            color: Colors.white54, fontSize: 13)),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.white24),
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Step 2: Browser mein kholo, photo + prompt bhejo',
-              style: GoogleFonts.poppins(
-                  color: Colors.white60, fontSize: 12),
-            ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 14),
+            Text('2. Ek AI mein kholo, photo + prompt bhejo:',
+                style: GoogleFonts.poppins(
+                    color: Colors.white54, fontSize: 12)),
+            const SizedBox(height: 8),
             Row(
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: () => launchUrl(
-                      Uri.parse('https://claude.ai'),
-                      mode: LaunchMode.externalApplication,
-                    ),
-                    icon: const Icon(Icons.auto_awesome, size: 16),
+                        Uri.parse('https://claude.ai'),
+                        mode: LaunchMode.externalApplication),
+                    icon: const Icon(Icons.auto_awesome, size: 15),
                     label: Text('Claude.ai',
                         style: GoogleFonts.poppins(
-                            fontWeight: FontWeight.w600)),
+                            fontWeight: FontWeight.w600, fontSize: 13)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFFFD600),
                       foregroundColor: Colors.black,
@@ -259,14 +233,13 @@ class _AiEditScreenState extends State<AiEditScreen> {
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: () => launchUrl(
-                      Uri.parse('https://chat.openai.com'),
-                      mode: LaunchMode.externalApplication,
-                    ),
+                        Uri.parse('https://chat.openai.com'),
+                        mode: LaunchMode.externalApplication),
                     icon: const Icon(Icons.chat_bubble_outline,
-                        size: 16, color: Colors.white54),
+                        size: 15, color: Colors.white54),
                     label: Text('ChatGPT',
                         style: GoogleFonts.poppins(
-                            color: Colors.white54)),
+                            color: Colors.white54, fontSize: 13)),
                     style: OutlinedButton.styleFrom(
                       side: const BorderSide(color: Colors.white24),
                       padding: const EdgeInsets.symmetric(vertical: 12),
@@ -275,50 +248,8 @@ class _AiEditScreenState extends State<AiEditScreen> {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
           ],
         ),
-      ),
-    );
-  }
-
-  // ── Dialogs ───────────────────────────────────────────────────────────────
-
-  void _showNoKeyDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: Text('API Key Required',
-            style: GoogleFonts.orbitron(
-                color: const Color(0xFFFFD600), fontSize: 16)),
-        content: Text(
-          'AI Edit ke liye HuggingFace API key darj karein.\n\n'
-          'Settings mein "HuggingFace API Key" section mein apni key save karein.',
-          style: GoogleFonts.poppins(color: Colors.white70, height: 1.5),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text('Cancel',
-                style: GoogleFonts.poppins(color: Colors.white54)),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const SettingsScreen()),
-              ).then((_) => _initApiKey());
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFFFD600),
-              foregroundColor: Colors.black,
-            ),
-            child: Text('Open Settings',
-                style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
-          ),
-        ],
       ),
     );
   }
@@ -329,7 +260,8 @@ class _AiEditScreenState extends State<AiEditScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A1A),
         title: Text('AI Edit Failed',
-            style: GoogleFonts.orbitron(color: Colors.red, fontSize: 15)),
+            style:
+                GoogleFonts.orbitron(color: Colors.red, fontSize: 15)),
         content: SingleChildScrollView(
           child: Text(msg,
               style: GoogleFonts.sourceCodePro(
@@ -361,46 +293,32 @@ class _AiEditScreenState extends State<AiEditScreen> {
     super.dispose();
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
-
   @override
   Widget build(BuildContext context) {
+    final hasKey = _apiKey != null && _apiKey!.isNotEmpty;
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A0A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF141414),
         title: Text('AI Edit',
-            style: GoogleFonts.orbitron(color: const Color(0xFFFFD600))),
+            style:
+                GoogleFonts.orbitron(color: const Color(0xFFFFD600))),
         iconTheme: const IconThemeData(color: Color(0xFFFFD600)),
         elevation: 0,
         actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 4),
-            child: IconButton(
-              icon: const Icon(Icons.open_in_browser,
-                  color: Colors.white54, size: 22),
-              tooltip: 'Browser se AI Edit',
-              onPressed: _showBrowserAiSheet,
-            ),
+          IconButton(
+            icon: const Icon(Icons.open_in_browser,
+                color: Colors.white54, size: 22),
+            tooltip: 'Browser se AI Edit',
+            onPressed: _showBrowserSheet,
           ),
           Padding(
-            padding: const EdgeInsets.only(right: 4),
+            padding: const EdgeInsets.only(right: 12),
             child: Icon(
-              _apiKey != null && _apiKey!.isNotEmpty
-                  ? Icons.key
-                  : Icons.key_off,
-              color: _apiKey != null && _apiKey!.isNotEmpty
-                  ? Colors.green
-                  : Colors.red,
+              hasKey ? Icons.key : Icons.key_off,
+              color: hasKey ? Colors.green : Colors.red,
               size: 20,
             ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings, color: Colors.white54, size: 22),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SettingsScreen()),
-            ).then((_) => _initApiKey()),
           ),
         ],
       ),
@@ -412,37 +330,33 @@ class _AiEditScreenState extends State<AiEditScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (_apiKey == null || _apiKey!.isEmpty)
-                    _ApiKeyBanner(
-                      onSettings: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const SettingsScreen()),
-                      ).then((_) => _initApiKey()),
-                      onBrowser: _showBrowserAiSheet,
-                    ),
+                  if (!hasKey) _NoKeyBanner(onSettings: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const SettingsScreen()),
+                    ).then((_) => _initApiKey());
+                  }, onBrowser: _showBrowserSheet),
 
-                  _SectionLabel(label: 'Step 1: Meter Photo'),
+                  _Label('Step 1: Meter Photo'),
                   const SizedBox(height: 8),
                   _ImagePickerCard(
                     image: _sourceImage,
                     onCamera: () => _pickImage(ImageSource.camera),
                     onGallery: () => _pickImage(ImageSource.gallery),
                   ),
-
                   const SizedBox(height: 20),
 
-                  _SectionLabel(label: 'Step 2: New Reading (kWh)'),
+                  _Label('Step 2: New Reading (kWh)'),
                   const SizedBox(height: 8),
                   TextField(
                     controller: _readingCtrl,
                     keyboardType: const TextInputType.numberWithOptions(
                         decimal: true),
                     style: GoogleFonts.orbitron(
-                      color: const Color(0xFF4CAF50),
-                      fontSize: 24,
-                      letterSpacing: 3,
-                    ),
+                        color: const Color(0xFF4CAF50),
+                        fontSize: 24,
+                        letterSpacing: 3),
                     decoration: InputDecoration(
                       hintText: '02603.36',
                       hintStyle: GoogleFonts.orbitron(
@@ -453,8 +367,8 @@ class _AiEditScreenState extends State<AiEditScreen> {
                       fillColor: Colors.black,
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
-                        borderSide:
-                            const BorderSide(color: Color(0xFF4CAF50)),
+                        borderSide: const BorderSide(
+                            color: Color(0xFF4CAF50)),
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
@@ -476,8 +390,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
                           horizontal: 14, vertical: 14),
                     ),
                   ),
-
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 20),
 
                   SizedBox(
                     width: double.infinity,
@@ -488,8 +401,8 @@ class _AiEditScreenState extends State<AiEditScreen> {
                               width: 20,
                               height: 20,
                               child: CircularProgressIndicator(
-                                  strokeWidth: 2.5, color: Colors.black),
-                            )
+                                  strokeWidth: 2.5,
+                                  color: Colors.black))
                           : const Icon(Icons.auto_awesome, size: 22),
                       label: Text(
                         _loading
@@ -504,29 +417,27 @@ class _AiEditScreenState extends State<AiEditScreen> {
                         disabledBackgroundColor:
                             const Color(0xFFFFD600).withOpacity(0.4),
                         disabledForegroundColor: Colors.black54,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        padding:
+                            const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12)),
                       ),
                     ),
                   ),
-
                   const SizedBox(height: 10),
-
                   SizedBox(
                     width: double.infinity,
                     child: OutlinedButton.icon(
-                      onPressed: _showBrowserAiSheet,
+                      onPressed: _showBrowserSheet,
                       icon: const Icon(Icons.open_in_browser,
                           color: Colors.white54, size: 18),
-                      label: Text(
-                        'Browser se AI Edit (Claude / ChatGPT)',
-                        style: GoogleFonts.poppins(
-                            color: Colors.white54, fontSize: 13),
-                      ),
+                      label: Text('Browser se AI Edit (Claude / ChatGPT)',
+                          style: GoogleFonts.poppins(
+                              color: Colors.white54, fontSize: 13)),
                       style: OutlinedButton.styleFrom(
                         side: const BorderSide(color: Colors.white24),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        padding:
+                            const EdgeInsets.symmetric(vertical: 13),
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12)),
                       ),
@@ -538,8 +449,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
                     Container(
                       padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
-                        color:
-                            const Color(0xFFFFD600).withOpacity(0.06),
+                        color: const Color(0xFFFFD600).withOpacity(0.06),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(
                             color: const Color(0xFFFFD600)
@@ -551,19 +461,16 @@ class _AiEditScreenState extends State<AiEditScreen> {
                             width: 16,
                             height: 16,
                             child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Color(0xFFFFD600),
-                            ),
+                                strokeWidth: 2,
+                                color: Color(0xFFFFD600)),
                           ),
                           const SizedBox(width: 12),
                           Expanded(
-                            child: Text(
-                              _statusMsg,
-                              style: GoogleFonts.poppins(
-                                  color: Colors.white60,
-                                  fontSize: 12,
-                                  height: 1.5),
-                            ),
+                            child: Text(_statusMsg,
+                                style: GoogleFonts.poppins(
+                                    color: Colors.white60,
+                                    fontSize: 12,
+                                    height: 1.5)),
                           ),
                         ],
                       ),
@@ -572,15 +479,13 @@ class _AiEditScreenState extends State<AiEditScreen> {
 
                   if (_resultImage != null) ...[  
                     const SizedBox(height: 24),
-                    _SectionLabel(label: 'Result — AI Edited Image'),
+                    _Label('Result — AI Edited Image'),
                     const SizedBox(height: 10),
                     ClipRRect(
                       borderRadius: BorderRadius.circular(12),
-                      child: Image.memory(
-                        _resultImage!,
-                        width: double.infinity,
-                        fit: BoxFit.contain,
-                      ),
+                      child: Image.memory(_resultImage!,
+                          width: double.infinity,
+                          fit: BoxFit.contain),
                     ),
                     const SizedBox(height: 14),
                     SizedBox(
@@ -627,13 +532,11 @@ class _AiEditScreenState extends State<AiEditScreen> {
                       ),
                     ),
                   ],
-
                   const SizedBox(height: 16),
                 ],
               ),
             ),
           ),
-
           if (_bannerLoaded && _bannerAd != null)
             SizedBox(
               width: _bannerAd!.size.width.toDouble(),
@@ -646,28 +549,22 @@ class _AiEditScreenState extends State<AiEditScreen> {
   }
 }
 
-// ── Helper widgets ────────────────────────────────────────────────────────────
-
-class _SectionLabel extends StatelessWidget {
-  final String label;
-  const _SectionLabel({required this.label});
-
+class _Label extends StatelessWidget {
+  final String text;
+  const _Label(this.text);
   @override
-  Widget build(BuildContext context) {
-    return Text(
-      label,
+  Widget build(BuildContext context) => Text(text,
       style: GoogleFonts.orbitron(
           fontSize: 13,
           color: const Color(0xFFFFD600),
-          letterSpacing: 0.5),
-    );
-  }
+          letterSpacing: 0.5));
 }
 
-class _ApiKeyBanner extends StatelessWidget {
+class _NoKeyBanner extends StatelessWidget {
   final VoidCallback onSettings;
   final VoidCallback onBrowser;
-  const _ApiKeyBanner({required this.onSettings, required this.onBrowser});
+  const _NoKeyBanner(
+      {required this.onSettings, required this.onBrowser});
 
   @override
   Widget build(BuildContext context) {
@@ -684,15 +581,16 @@ class _ApiKeyBanner extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.key_off, color: Colors.orange, size: 18),
+              const Icon(Icons.info_outline,
+                  color: Colors.orange, size: 16),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'HuggingFace API key nahi mili',
+                  'HuggingFace API key nahi mili — app is ke baghair bhi chalti hai',
                   style: GoogleFonts.poppins(
                       color: Colors.orange,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500),
                 ),
               ),
             ],
@@ -701,60 +599,20 @@ class _ApiKeyBanner extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: GestureDetector(
+                child: _BannerBtn(
+                  icon: Icons.settings,
+                  label: 'API Key Add Karo',
+                  color: const Color(0xFF00E5FF),
                   onTap: onSettings,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF00E5FF).withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color:
-                              const Color(0xFF00E5FF).withOpacity(0.3)),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.settings,
-                            color: Color(0xFF00E5FF), size: 14),
-                        const SizedBox(width: 6),
-                        Text('Key Add Karo',
-                            style: GoogleFonts.poppins(
-                                color: const Color(0xFF00E5FF),
-                                fontSize: 12)),
-                      ],
-                    ),
-                  ),
                 ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 8),
               Expanded(
-                child: GestureDetector(
+                child: _BannerBtn(
+                  icon: Icons.open_in_browser,
+                  label: 'Browser Use Karo',
+                  color: const Color(0xFFFFD600),
                   onTap: onBrowser,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFD600).withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color:
-                              const Color(0xFFFFD600).withOpacity(0.3)),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.open_in_browser,
-                            color: Color(0xFFFFD600), size: 14),
-                        const SizedBox(width: 6),
-                        Text('Browser Use Karo',
-                            style: GoogleFonts.poppins(
-                                color: const Color(0xFFFFD600),
-                                fontSize: 12)),
-                      ],
-                    ),
-                  ),
                 ),
               ),
             ],
@@ -765,16 +623,55 @@ class _ApiKeyBanner extends StatelessWidget {
   }
 }
 
+class _BannerBtn extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+  const _BannerBtn(
+      {required this.icon,
+      required this.label,
+      required this.color,
+      required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding:
+            const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withOpacity(0.3)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: color, size: 14),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(label,
+                  style: GoogleFonts.poppins(
+                      color: color, fontSize: 11),
+                  overflow: TextOverflow.ellipsis),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ImagePickerCard extends StatelessWidget {
   final File? image;
   final VoidCallback onCamera;
   final VoidCallback onGallery;
-
-  const _ImagePickerCard({
-    required this.image,
-    required this.onCamera,
-    required this.onGallery,
-  });
+  const _ImagePickerCard(
+      {required this.image,
+      required this.onCamera,
+      required this.onGallery});
 
   @override
   Widget build(BuildContext context) {
@@ -784,7 +681,9 @@ class _ImagePickerCard extends StatelessWidget {
           ClipRRect(
             borderRadius: BorderRadius.circular(12),
             child: Image.file(image!,
-                width: double.infinity, height: 220, fit: BoxFit.cover),
+                width: double.infinity,
+                height: 220,
+                fit: BoxFit.cover),
           ),
           Positioned(
             top: 8,
@@ -800,32 +699,28 @@ class _ImagePickerCard extends StatelessWidget {
         ],
       );
     }
-
     return Container(
       height: 180,
       decoration: BoxDecoration(
         color: const Color(0xFF141414),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-            color: const Color(0xFFFFD600).withOpacity(0.3),
-            style: BorderStyle.solid),
+            color: const Color(0xFFFFD600).withOpacity(0.3)),
       ),
       child: Row(
         children: [
           Expanded(
             child: _PickBtn(
-              icon: Icons.camera_alt,
-              label: 'Camera',
-              onTap: onCamera,
-            ),
+                icon: Icons.camera_alt,
+                label: 'Camera',
+                onTap: onCamera),
           ),
           Container(width: 1, height: 60, color: Colors.white12),
           Expanded(
             child: _PickBtn(
-              icon: Icons.photo_library,
-              label: 'Gallery',
-              onTap: onGallery,
-            ),
+                icon: Icons.photo_library,
+                label: 'Gallery',
+                onTap: onGallery),
           ),
         ],
       ),
@@ -839,7 +734,6 @@ class _PickBtn extends StatelessWidget {
   final VoidCallback onTap;
   const _PickBtn(
       {required this.icon, required this.label, required this.onTap});
-
   @override
   Widget build(BuildContext context) {
     return InkWell(
@@ -851,8 +745,8 @@ class _PickBtn extends StatelessWidget {
           Icon(icon, color: const Color(0xFFFFD600), size: 36),
           const SizedBox(height: 8),
           Text(label,
-              style:
-                  GoogleFonts.poppins(color: Colors.white54, fontSize: 13)),
+              style: GoogleFonts.poppins(
+                  color: Colors.white54, fontSize: 13)),
         ],
       ),
     );
@@ -863,7 +757,6 @@ class _SmallBtn extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
   const _SmallBtn({required this.icon, required this.onTap});
-
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
