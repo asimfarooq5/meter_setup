@@ -24,14 +24,14 @@ class SettingsScreen extends StatelessWidget {
               color: const Color(0xFF161616),
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
-                  color: const Color(0xFF00E5FF).withOpacity(0.15)),
+                  color: const Color(0xFF00E5FF).withValues(alpha: 0.15)),
             ),
             child: Row(children: [
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: const Color(0xFF00E5FF).withOpacity(0.1),
+                  color: const Color(0xFF00E5FF).withValues(alpha: 0.1),
                 ),
                 child: const Icon(Icons.electric_meter,
                     color: Color(0xFF00E5FF), size: 32),

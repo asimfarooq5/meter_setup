@@ -37,7 +37,6 @@ class OfflineEditScreen extends StatefulWidget {
 class _OfflineEditScreenState extends State<OfflineEditScreen> {
   _Step _step = _Step.pick;
 
-  File? _imageFile;
   ui.Image? _uiImage;
 
   Offset? _selA, _selB;
@@ -69,8 +68,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     if (!mounted) { frame.image.dispose(); return; }
     _uiImage?.dispose();
     setState(() {
-      _imageFile = File(x.path);
-      _uiImage   = frame.image;
+      _uiImage = frame.image;
       _step = _Step.select;
       _selA = _selB = null;
       _preview = null;
@@ -116,9 +114,9 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
         lcd,
         Paint()
           ..color = Color.fromARGB(255,
-              (dc.red   * 0.07).round(),
-              (dc.green * 0.07).round(),
-              (dc.blue  * 0.07).round()));
+              (dc.r * 255 * 0.07).round(),
+              (dc.g * 255 * 0.07).round(),
+              (dc.b * 255 * 0.07).round()));
 
     // 7-segment digits
     _drawString(canvas, reading, lcd, dc);
@@ -135,9 +133,9 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     if (text.isEmpty) return;
     final off = Color.fromARGB(
         255,
-        (on.red   * 0.10).round(),
-        (on.green * 0.10).round(),
-        (on.blue  * 0.10).round());
+        (on.r * 255 * 0.10).round(),
+        (on.g * 255 * 0.10).round(),
+        (on.b * 255 * 0.10).round());
 
     double units = 0;
     for (final c in text.characters) {
@@ -332,8 +330,8 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 border: Border.all(
-                    color: const Color(0xFF00E5FF).withOpacity(0.3), width: 2),
-                color: const Color(0xFF00E5FF).withOpacity(0.05),
+                    color: const Color(0xFF00E5FF).withValues(alpha: 0.3), width: 2),
+                color: const Color(0xFF00E5FF).withValues(alpha: 0.05),
               ),
               child: const Icon(Icons.electric_meter,
                   size: 72, color: Color(0xFF00E5FF)),
@@ -469,7 +467,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
             decoration: InputDecoration(
               hintText: '12345.6',
               hintStyle: TextStyle(
-                  color: Colors.white.withOpacity(0.15), letterSpacing: 2),
+                  color: Colors.white.withValues(alpha: 0.15), letterSpacing: 2),
               filled: true,
               fillColor: const Color(0xFF0D1A1A),
               contentPadding:
@@ -480,7 +478,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
               enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
                   borderSide: BorderSide(
-                      color: const Color(0xFF00E5FF).withOpacity(0.25))),
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.25))),
               focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
                   borderSide:
@@ -508,7 +506,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
                         horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(
                       color: sel
-                          ? t.displayColor.withOpacity(0.15)
+                          ? t.displayColor.withValues(alpha: 0.15)
                           : const Color(0xFF1A1A1A),
                       border: Border.all(
                           color: sel
@@ -526,7 +524,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
                               shape: BoxShape.circle,
                               boxShadow: sel
                                   ? [BoxShadow(
-                                      color: t.displayColor.withOpacity(0.6),
+                                      color: t.displayColor.withValues(alpha: 0.6),
                                       blurRadius: 8)]
                                   : null)),
                       const SizedBox(width: 7),
@@ -613,7 +611,7 @@ class _SelectPainter extends CustomPainter {
 
     if (sel == null) return;
     final s   = sel!;
-    final dim = Paint()..color = Colors.black.withOpacity(0.55);
+    final dim = Paint()..color = Colors.black.withValues(alpha: 0.55);
 
     canvas.drawRect(Rect.fromLTRB(imgRect.left, imgRect.top, imgRect.right, s.top), dim);
     canvas.drawRect(Rect.fromLTRB(imgRect.left, s.bottom, imgRect.right, imgRect.bottom), dim);
@@ -657,8 +655,8 @@ class _BigBtn extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 22),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.08),
-          border: Border.all(color: color.withOpacity(0.4), width: 1.5),
+          color: color.withValues(alpha: 0.08),
+          border: Border.all(color: color.withValues(alpha: 0.4), width: 1.5),
           borderRadius: BorderRadius.circular(14),
         ),
         child: Column(mainAxisSize: MainAxisSize.min, children: [

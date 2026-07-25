@@ -21,9 +21,9 @@ class HomeScreen extends StatelessWidget {
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   border: Border.all(
-                      color: const Color(0xFF00E5FF).withOpacity(0.4),
+                      color: const Color(0xFF00E5FF).withValues(alpha: 0.4),
                       width: 2),
-                  color: const Color(0xFF00E5FF).withOpacity(0.06),
+                  color: const Color(0xFF00E5FF).withValues(alpha: 0.06),
                 ),
                 child: const Icon(Icons.electric_meter,
                     size: 56, color: Color(0xFF00E5FF)),
@@ -56,14 +56,14 @@ class HomeScreen extends StatelessWidget {
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       colors: [
-                        const Color(0xFF00E5FF).withOpacity(0.15),
-                        const Color(0xFF00E5FF).withOpacity(0.05),
+                        const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                        const Color(0xFF00E5FF).withValues(alpha: 0.05),
                       ],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
                     border: Border.all(
-                        color: const Color(0xFF00E5FF).withOpacity(0.5),
+                        color: const Color(0xFF00E5FF).withValues(alpha: 0.5),
                         width: 1.5),
                     borderRadius: BorderRadius.circular(16),
                   ),
@@ -124,7 +124,7 @@ class HomeScreen extends StatelessWidget {
                             alignment: Alignment.center,
                             decoration: BoxDecoration(
                               color:
-                                  const Color(0xFF00E5FF).withOpacity(0.15),
+                                  const Color(0xFF00E5FF).withValues(alpha: 0.15),
                               shape: BoxShape.circle,
                             ),
                             child: Text(step.$1,
