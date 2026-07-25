@@ -15,6 +15,14 @@ if (localPropertiesFile.exists()) {
 def flutterVersionCode = localProperties.getProperty('flutter.versionCode') ?: '1'
 def flutterVersionName = localProperties.getProperty('flutter.versionName') ?: '1.0'
 
+def keyProperties = new Properties()
+def keyPropertiesFile = rootProject.file('key.properties')
+if (keyPropertiesFile.exists()) {
+    keyPropertiesFile.withReader('UTF-8') { reader ->
+        keyProperties.load(reader)
+    }
+}
+
 android {
     namespace "com.example.meter_setup"
     compileSdk flutter.compileSdkVersion
@@ -42,9 +50,20 @@ android {
         multiDexEnabled true
     }
 
+    signingConfigs {
+        if (keyPropertiesFile.exists()) {
+            release {
+                keyAlias keyProperties['keyAlias']
+                keyPassword keyProperties['keyPassword']
+                storeFile file(keyProperties['storeFile'])
+                storePassword keyProperties['storePassword']
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig signingConfigs.debug
+            signingConfig keyPropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
