@@ -47,6 +47,8 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
   // Manual select fallback
   Offset? _selA, _selB;
   Rect    _imgRect = Rect.zero;
+  // '' = drawing new box; 'tl'/'tr'/'bl'/'br' = corner; 'body' = moving whole box
+  String  _dragHandle = '';
 
   final _ctrl    = TextEditingController();
   Uint8List? _preview;
@@ -198,29 +200,63 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     return (rect, colors.$2, colors.$1);
   }
 
-  // Sample average color of LCD region → bg fill color
-  // Digit color = bg darkened to ~52% (real reflective LCD look)
+  // Sample LCD region using luminance percentiles:
+  //   top-40% brightest pixels  → LCD background color
+  //   bottom-20% darkest pixels → actual segment color (measured from photo)
+  // Samples from inner 75%×70% of the rect to avoid including the bezel frame.
   (Color, Color) _sampleColors(Uint8List px, int w, int h, Rect rect) {
-    int tr = 0, tg = 0, tb = 0, cnt = 0;
-    final y0 = rect.top.round().clamp(0, h - 1);
-    final y1 = rect.bottom.round().clamp(0, h);
-    final x0 = rect.left.round().clamp(0, w - 1);
-    final x1 = rect.right.round().clamp(0, w);
-    for (int y = y0; y < y1; y += 3) {
-      for (int x = x0; x < x1; x += 3) {
-        final i = (y * w + x) * 4;
-        tr += px[i]; tg += px[i + 1]; tb += px[i + 2]; cnt++;
+    // Inner region — skip the outer frame/bezel
+    final ix0 = (rect.left   + rect.width  * 0.12).round().clamp(0, w - 1);
+    final iy0 = (rect.top    + rect.height * 0.15).round().clamp(0, h - 1);
+    final ix1 = (rect.right  - rect.width  * 0.12).round().clamp(0, w);
+    final iy1 = (rect.bottom - rect.height * 0.15).round().clamp(0, h);
+
+    // Collect (r,g,b,lum) for every sampled pixel
+    final rs = <int>[], gs = <int>[], bs = <int>[], lums = <double>[];
+    for (int y = iy0; y < iy1; y += 2) {
+      for (int x = ix0; x < ix1; x += 2) {
+        final i  = (y * w + x) * 4;
+        final r  = px[i]; final g = px[i + 1]; final b = px[i + 2];
+        final lm = 0.299 * r + 0.587 * g + 0.114 * b;
+        rs.add(r); gs.add(g); bs.add(b); lums.add(lm);
       }
     }
-    if (cnt == 0) {
-      return (const Color(0xFF808080), const Color(0xFF404040));
+    if (rs.isEmpty) return (const Color(0xFFBBBBBB), const Color(0xFF444444));
+
+    // Sort indices by luminance
+    final idx = List.generate(rs.length, (i) => i)
+      ..sort((a, b) => lums[a].compareTo(lums[b]));
+
+    // Top 40% brightest → background (LCD panel colour, no segments)
+    final bgStart = (idx.length * 0.60).toInt();
+    int tr = 0, tg = 0, tb = 0;
+    for (int k = bgStart; k < idx.length; k++) {
+      tr += rs[idx[k]]; tg += gs[idx[k]]; tb += bs[idx[k]];
     }
-    final bgR = tr ~/ cnt; final bgG = tg ~/ cnt; final bgB = tb ~/ cnt;
-    final bg  = Color.fromARGB(255, bgR, bgG, bgB);
-    // Active segments: 52% of bg brightness → naturally darker, same hue
-    final dig = Color.fromARGB(255,
-        (bgR * 0.52).round(), (bgG * 0.52).round(), (bgB * 0.52).round());
-    return (bg, dig);  // (bgColor, digitColor)
+    final bgCnt = idx.length - bgStart;
+    final bgR = tr ~/ bgCnt; final bgG = tg ~/ bgCnt; final bgB = tb ~/ bgCnt;
+    final bgLum = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB;
+
+    // Bottom 20% darkest → digit segment colour (actual dark pixels in photo)
+    final segEnd = (idx.length * 0.20).toInt().clamp(1, idx.length);
+    tr = 0; tg = 0; tb = 0;
+    for (int k = 0; k < segEnd; k++) {
+      tr += rs[idx[k]]; tg += gs[idx[k]]; tb += bs[idx[k]];
+    }
+    final segR = tr ~/ segEnd; final segG = tg ~/ segEnd; final segB = tb ~/ segEnd;
+    final segLum = 0.299 * segR + 0.587 * segG + 0.114 * segB;
+
+    final bg = Color.fromARGB(255, bgR, bgG, bgB);
+    // Use measured segment colour if it is clearly darker than background;
+    // otherwise fall back to 38 % of background (reflective LCD typical ratio)
+    final Color dig;
+    if (bgLum > 0 && segLum / bgLum < 0.68) {
+      dig = Color.fromARGB(255, segR, segG, segB);
+    } else {
+      dig = Color.fromARGB(255,
+          (bgR * 0.38).round(), (bgG * 0.38).round(), (bgB * 0.38).round());
+    }
+    return (bg, dig); // (bgColor, digitColor)
   }
 
   // ─── Manual select (fallback) ──────────────────────────────────────
@@ -538,12 +574,35 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
       ),
       Expanded(
         child: GestureDetector(
-          onPanStart:  (d) => setState(() {
-            _selA = d.localPosition;
-            _selB = d.localPosition;
-          }),
-          onPanUpdate: (d) => setState(() => _selB = d.localPosition),
-          onPanEnd:    (_) {},
+          onPanStart: (d) {
+            final pos = d.localPosition;
+            final s   = _selScreen;
+            if (s != null) {
+              // Normalise A/B so A=topLeft, B=bottomRight before handle ops
+              const hR = 26.0; // handle hit radius
+              if ((pos - s.topLeft).distance     < hR) { setState(() { _selA = s.topLeft;     _selB = s.bottomRight; _dragHandle = 'tl'; }); return; }
+              if ((pos - s.topRight).distance    < hR) { setState(() { _selA = s.topLeft;     _selB = s.bottomRight; _dragHandle = 'tr'; }); return; }
+              if ((pos - s.bottomLeft).distance  < hR) { setState(() { _selA = s.topLeft;     _selB = s.bottomRight; _dragHandle = 'bl'; }); return; }
+              if ((pos - s.bottomRight).distance < hR) { setState(() { _selA = s.topLeft;     _selB = s.bottomRight; _dragHandle = 'br'; }); return; }
+              if (s.contains(pos)) { setState(() { _selA = s.topLeft; _selB = s.bottomRight; _dragHandle = 'body'; }); return; }
+            }
+            // Draw a fresh box
+            setState(() { _selA = pos; _selB = pos; _dragHandle = ''; });
+          },
+          onPanUpdate: (d) {
+            final pos = d.localPosition;
+            setState(() {
+              switch (_dragHandle) {
+                case 'tl':   _selA = pos; break;
+                case 'tr':   _selA = Offset(_selA!.dx, pos.dy); _selB = Offset(pos.dx, _selB!.dy); break;
+                case 'bl':   _selA = Offset(pos.dx, _selA!.dy); _selB = Offset(_selB!.dx, pos.dy); break;
+                case 'br':   _selB = pos; break;
+                case 'body': _selA = _selA! + d.delta; _selB = _selB! + d.delta; break;
+                default:     _selB = pos; break; // drawing new box
+              }
+            });
+          },
+          onPanEnd: (_) => setState(() => _dragHandle = ''),
           child: LayoutBuilder(builder: (_, cons) {
             final imgW = _uiImage!.width.toDouble();
             final imgH = _uiImage!.height.toDouble();
@@ -821,19 +880,25 @@ class _SelectPainter extends CustomPainter {
       ..color = Colors.cyan
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2);
-    // Corner handles
-    const hs = 14.0;
-    final hp = Paint()
-      ..color = Colors.cyan
-      ..strokeWidth = 3
-      ..style = PaintingStyle.stroke;
-    for (final c in [
-      s.topLeft, s.topRight, s.bottomLeft, s.bottomRight
-    ]) {
-      final dx = (c.dx == s.left) ? 1 : -1;
-      final dy = (c.dy == s.top)  ? 1 : -1;
-      canvas.drawLine(c, c + Offset(hs * dx, 0), hp);
-      canvas.drawLine(c, c + Offset(0, hs * dy), hp);
+    // Corner handles — filled circles users can grab
+    const hR = 10.0;
+    final hFill   = Paint()..color = Colors.cyan;
+    final hBorder = Paint()..color = Colors.black.withValues(alpha: 0.6)
+      ..style = PaintingStyle.stroke ..strokeWidth = 1.5;
+    for (final c in [s.topLeft, s.topRight, s.bottomLeft, s.bottomRight]) {
+      canvas.drawCircle(c, hR, hFill);
+      canvas.drawCircle(c, hR, hBorder);
+    }
+    // Mid-edge handles for easier vertical/horizontal resize
+    final midEdges = [
+      Offset(s.center.dx, s.top),
+      Offset(s.center.dx, s.bottom),
+      Offset(s.left,  s.center.dy),
+      Offset(s.right, s.center.dy),
+    ];
+    for (final c in midEdges) {
+      canvas.drawCircle(c, hR * 0.7, hFill);
+      canvas.drawCircle(c, hR * 0.7, hBorder);
     }
   }
 
