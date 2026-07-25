@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'dart:ui' as ui;
@@ -322,22 +323,60 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
 
   Future<Uint8List> _render(String reading) async {
     final lcd = _lcdRect!;
-    final iw  = _uiImage!.width.toDouble();
-    final ih  = _uiImage!.height.toDouble();
-    final rec = ui.PictureRecorder();
-    final can = Canvas(rec, Rect.fromLTWH(0, 0, iw, ih));
+    final iw  = _uiImage!.width;
+    final ih  = _uiImage!.height;
 
-    can.drawImage(_uiImage!, Offset.zero, Paint());
-    // Solid fill erases original digit marks. Histogram-mode bgColor
-    // closely matches the real LCD panel, so the filled rectangle
-    // blends with the surrounding meter photo.
-    can.drawRect(lcd, Paint()..color = _bgColor);
+    // ── Pixel-level digit erasure ─────────────────────────────────────
+    // Instead of a flat colour fill (which looks like a painted box),
+    // scan the LCD rect pixel-by-pixel: dark pixels (original digit
+    // marks) are replaced with bgColor; bright background pixels are
+    // left untouched so the LCD glass texture is preserved.
+    // Threshold: any pixel whose luminance < 68 % of bgLum is a mark.
+    final outPx = Uint8List.fromList(_rawPx!);
+    final bgR   = (_bgColor.r * 255).round();
+    final bgG   = (_bgColor.g * 255).round();
+    final bgB   = (_bgColor.b * 255).round();
+    final bgLum = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB;
+    final markThr = bgLum * 0.68;
+
+    final lx0 = lcd.left.round().clamp(0, iw);
+    final ly0 = lcd.top.round().clamp(0, ih);
+    final lx1 = lcd.right.round().clamp(0, iw);
+    final ly1 = lcd.bottom.round().clamp(0, ih);
+
+    for (int y = ly0; y < ly1; y++) {
+      for (int x = lx0; x < lx1; x++) {
+        final k   = (y * iw + x) * 4;
+        final lum = 0.299 * outPx[k] + 0.587 * outPx[k + 1] + 0.114 * outPx[k + 2];
+        if (lum < markThr) {
+          outPx[k]     = bgR;
+          outPx[k + 1] = bgG;
+          outPx[k + 2] = bgB;
+          // alpha byte (k+3) stays 255
+        }
+      }
+    }
+
+    // Decode the modified pixel buffer back to a ui.Image
+    final comp = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+      outPx, iw, ih, ui.PixelFormat.rgba8888,
+      (img) => comp.complete(img),
+      rowBytes: iw * 4,
+    );
+    final modImg = await comp.future;
+
+    // Draw the texture-preserved image then overlay new digit segments
+    final rec = ui.PictureRecorder();
+    final can = Canvas(rec, Rect.fromLTWH(0, 0, iw.toDouble(), ih.toDouble()));
+    can.drawImage(modImg, Offset.zero, Paint());
+    modImg.dispose();
     _drawString(can, reading, lcd, _digitColor, _bgColor);
 
     final pic = rec.endRecording();
-    final out = await pic.toImage(iw.toInt(), ih.toInt());
+    final out = await pic.toImage(iw, ih);
     pic.dispose();
-    final bd = await out.toByteData(format: ui.ImageByteFormat.png);
+    final bd  = await out.toByteData(format: ui.ImageByteFormat.png);
     out.dispose();
     return bd!.buffer.asUint8List();
   }
