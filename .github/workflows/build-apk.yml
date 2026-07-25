@@ -13,7 +13,7 @@ on:
 
 jobs:
   build:
-    name: Build Debug APK
+    name: Build Release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -42,19 +42,19 @@ jobs:
         run: flutter analyze --no-fatal-infos
         continue-on-error: true
 
-      - name: Build Debug APK
-        run: flutter build apk --debug --verbose
+      - name: Build Release APK
+        run: flutter build apk --release --verbose
 
-      - name: Upload Debug APK
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: MeterSetPro-debug-${{ github.run_number }}
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          name: MeterSetPro-release-${{ github.run_number }}
+          path: build/app/outputs/flutter-apk/app-release.apk
           retention-days: 14
           if-no-files-found: error
 
       - name: APK size
         run: |
-          size=$(du -sh build/app/outputs/flutter-apk/app-debug.apk | cut -f1)
+          size=$(du -sh build/app/outputs/flutter-apk/app-release.apk | cut -f1)
           echo "APK size: $size"
-          echo "✅ Build #${{ github.run_number }} complete"
+          echo "✅ Release Build #${{ github.run_number }} complete"
