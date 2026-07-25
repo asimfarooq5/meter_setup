@@ -33,41 +33,15 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Decode Keystore
-        run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app/meterset-release-key.jks
-
-      - name: Create key.properties
-        run: |
-          cat <<EOF > android/key.properties
-          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
-          storeFile=meterset-release-key.jks
-          EOF
-
       - name: Build Release APK
         run: flutter build apk --release --no-tree-shake-icons --build-number=${{ github.run_number }}
-
-      - name: Rename APK
-        run: cp build/app/outputs/flutter-apk/app-release.apk MeterSetPro-v${{ github.run_number }}.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           name: MeterSet Pro – Build ${{ github.run_number }}
-          body: |
-            ## MeterSet Pro Release
-
-            **Build:** #${{ github.run_number }}
-            **Branch:** ${{ github.ref_name }}
-            **Commit:** ${{ github.sha }}
-
-            ### Install
-            1. Download `MeterSetPro-v${{ github.run_number }}.apk`
-            2. Enable *Install from unknown sources* on your device
-            3. Install the APK
-          files: MeterSetPro-v${{ github.run_number }}.apk
+          body: "Build #${{ github.run_number }} • ${{ github.ref_name }}"
+          files: build/app/outputs/flutter-apk/app-release.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
