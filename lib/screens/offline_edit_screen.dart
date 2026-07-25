@@ -1,9 +1,9 @@
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -419,7 +419,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     setState(() => _saving = true);
     try {
       final bytes = await _render(r);
-      final dir   = await getTemporaryDirectory();
+      final dir   = await getApplicationDocumentsDirectory();
       final ts    = DateTime.now();
       final path  = '${dir.path}/meter_${ts.millisecondsSinceEpoch}.png';
       await File(path).writeAsBytes(bytes);
@@ -712,6 +712,9 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
             autofocus: true,
             keyboardType: const TextInputType.numberWithOptions(
                 decimal: true),
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[\d.]')),
+            ],
             style: const TextStyle(
                 color: Colors.white,
                 fontSize: 22,

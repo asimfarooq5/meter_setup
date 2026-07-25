@@ -75,9 +75,9 @@ class SettingsScreen extends StatelessWidget {
             color: Colors.orange,
           ),
           _InfoRow(
-            icon: Icons.display_settings,
-            title: '6 LCD Styles',
-            subtitle: 'Green, Amber, White, Cyan, Red, Blue',
+            icon: Icons.auto_fix_high,
+            title: 'Auto LCD Detection',
+            subtitle: 'Grey, white, green, amber — sab detect hota hai',
             color: Colors.cyan,
           ),
 

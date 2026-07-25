@@ -6,6 +6,10 @@ import 'screens/offline_edit_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Prevent google_fonts from fetching fonts over the network — app is fully offline.
+  // Fonts already cached from a previous run will still work; new installs use
+  // the Material fallback font, which is fine.
+  GoogleFonts.config.allowRuntimeFetching = false;
   await MobileAds.instance.initialize();
   runApp(const MeterSetProApp());
 }

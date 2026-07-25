@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
@@ -13,14 +14,21 @@ class HistoryScreen extends StatefulWidget {
 class _HistoryScreenState extends State<HistoryScreen> {
   List<HistoryItem> _history = [];
   bool _loading = true;
+  StreamSubscription<void>? _historySub;
 
   @override
   void initState() {
     super.initState();
     _load();
-    StorageService.instance.onHistoryChanged.listen((_) {
+    _historySub = StorageService.instance.onHistoryChanged.listen((_) {
       if (mounted) _load();
     });
+  }
+
+  @override
+  void dispose() {
+    _historySub?.cancel();
+    super.dispose();
   }
 
   Future<void> _load() async {

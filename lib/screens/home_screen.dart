@@ -110,9 +110,8 @@ class HomeScreen extends StatelessWidget {
                     const SizedBox(height: 12),
                     for (final step in [
                       ('1', 'Meter ki photo lo ya gallery se upload karo'),
-                      ('2', 'LCD display area pe drag karke select karo'),
-                      ('3',
-                          'Nai reading type karo, style chuno, preview dekho'),
+                      ('2', 'LCD area auto-detect hoga — ya manually select karo'),
+                      ('3', 'Nai reading type karo aur preview dekho'),
                       ('4', 'Save karo aur share karo'),
                     ])
                       Padding(

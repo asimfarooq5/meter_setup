@@ -1,4 +1,4 @@
-package com.example.meter_setup
+package com.metersetpro.app
 
 import io.flutter.embedding.android.FlutterActivity
 
