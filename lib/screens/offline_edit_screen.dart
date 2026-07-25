@@ -1,644 +1,673 @@
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart';
+
 import '../models/history_item.dart';
 import '../models/meter_template.dart';
 import '../services/storage_service.dart';
 
+// 7-segment: [top, top-right, bot-right, bottom, bot-left, top-left, middle]
+const Map<String, List<bool>> _segs = {
+  '0': [true,  true,  true,  true,  true,  true,  false],
+  '1': [false, true,  true,  false, false, false, false],
+  '2': [true,  true,  false, true,  true,  false, true ],
+  '3': [true,  true,  true,  true,  false, false, true ],
+  '4': [false, true,  true,  false, false, true,  true ],
+  '5': [true,  false, true,  true,  false, true,  true ],
+  '6': [true,  false, true,  true,  true,  true,  true ],
+  '7': [true,  true,  true,  false, false, false, false],
+  '8': [true,  true,  true,  true,  true,  true,  true ],
+  '9': [true,  true,  true,  true,  false, true,  true ],
+};
+
+enum _Step { pick, select, edit }
+
 class OfflineEditScreen extends StatefulWidget {
   const OfflineEditScreen({super.key});
-
   @override
   State<OfflineEditScreen> createState() => _OfflineEditScreenState();
 }
 
 class _OfflineEditScreenState extends State<OfflineEditScreen> {
-  File? _selectedImage;
-  final TextEditingController _readingController = TextEditingController();
-  final FocusNode _readingFocus = FocusNode();
-  final GlobalKey _repaintKey = GlobalKey();
-  Offset _overlayPosition = const Offset(60, 60);
-  double _fontSize = 34.0;
-  Color _textColor = const Color(0xFF4CAF50);
-  bool _hasBg = true;
-  bool _isSaving = false;
-  bool _showDragHint = true;
-  MeterTemplate _selectedTemplate = MeterTemplate.presets.first;
+  _Step _step = _Step.pick;
 
-  BannerAd? _bannerAd;
-  bool _isBannerAdLoaded = false;
+  File? _imageFile;
+  ui.Image? _uiImage;
 
-  // TODO: Replace with your real AdMob Banner Ad Unit ID
-  static const String _bannerAdUnitId =
-      'ca-app-pub-3940256099942544/6300978111'; // Test ID
+  Offset? _selA, _selB;
+  bool _dragging = false;
+  Rect _imgRect = Rect.zero;
 
-  // TODO: Replace with your real AdMob Interstitial Ad Unit ID
-  static const String _interstitialAdUnitId =
-      'ca-app-pub-3940256099942544/1033173712'; // Test ID
+  final _ctrl = TextEditingController();
+  MeterTemplate _tmpl = MeterTemplate.presets[0];
 
-  InterstitialAd? _interstitialAd;
-  int _editCount = 0;
-
-  static const List<Color> _colorOptions = [
-    Color(0xFF4CAF50),
-    Color(0xFFFFBF00),
-    Colors.white,
-    Color(0xFF00E5FF),
-    Color(0xFFFF5252),
-    Color(0xFF448AFF),
-    Colors.black,
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadBannerAd();
-    _loadInterstitialAd();
-  }
-
-  void _applyTemplate(MeterTemplate t) {
-    setState(() {
-      _selectedTemplate = t;
-      _textColor = t.displayColor;
-      _fontSize = t.fontSize;
-      _hasBg = t.hasBg;
-    });
-  }
-
-  void _loadBannerAd() {
-    _bannerAd = BannerAd(
-      adUnitId: _bannerAdUnitId,
-      size: AdSize.banner,
-      request: const AdRequest(),
-      listener: BannerAdListener(
-        onAdLoaded: (ad) => setState(() => _isBannerAdLoaded = true),
-        onAdFailedToLoad: (ad, error) {
-          ad.dispose();
-          _bannerAd = null;
-        },
-      ),
-    )..load();
-  }
-
-  void _loadInterstitialAd() {
-    InterstitialAd.load(
-      adUnitId: _interstitialAdUnitId,
-      request: const AdRequest(),
-      adLoadCallback: InterstitialAdLoadCallback(
-        onAdLoaded: (ad) => _interstitialAd = ad,
-        onAdFailedToLoad: (_) => _interstitialAd = null,
-      ),
-    );
-  }
-
-  void _showInterstitialIfReady() {
-    _editCount++;
-    if (_editCount % 3 == 0 && _interstitialAd != null) {
-      _interstitialAd!.show();
-      _interstitialAd = null;
-      _loadInterstitialAd();
-    }
-  }
-
-  Future<void> _pickImage(ImageSource source) async {
-    _readingFocus.unfocus();
-    try {
-      final XFile? file = await ImagePicker()
-          .pickImage(source: source, imageQuality: 100);
-      if (file != null && mounted) {
-        setState(() {
-          _selectedImage = File(file.path);
-          _overlayPosition = const Offset(60, 60);
-          _showDragHint = true;
-        });
-      }
-    } catch (e) {
-      _showSnack('Could not pick image: $e');
-    }
-  }
-
-  Future<void> _saveAndShare() async {
-    if (_selectedImage == null || _readingController.text.trim().isEmpty) {
-      _showSnack('Please select a photo and enter a meter reading');
-      return;
-    }
-    _readingFocus.unfocus();
-    await Future.delayed(const Duration(milliseconds: 100));
-
-    setState(() => _isSaving = true);
-    try {
-      final RenderRepaintBoundary boundary = _repaintKey.currentContext!
-          .findRenderObject() as RenderRepaintBoundary;
-      final ui.Image image = await boundary.toImage(pixelRatio: 3.0);
-      final ByteData? byteData =
-          await image.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) throw Exception('Failed to capture image');
-
-      final Uint8List pngBytes = byteData.buffer.asUint8List();
-      final dir = await getTemporaryDirectory();
-      final String stamp = DateTime.now().millisecondsSinceEpoch.toString();
-      final String filePath = '\${dir.path}/meter_\$stamp.png';
-      await File(filePath).writeAsBytes(pngBytes);
-
-      await StorageService.instance.addHistory(HistoryItem(
-        filePath: filePath,
-        reading: _readingController.text.trim(),
-        timestamp: DateTime.now(),
-      ));
-
-      await Share.shareXFiles(
-        [XFile(filePath)],
-        text: 'Meter Reading: \${_readingController.text.trim()} kWh\n'
-            'Edited with MeterSet Pro',
-      );
-
-      _showInterstitialIfReady();
-    } catch (e) {
-      _showSnack('Error saving: \$e');
-    } finally {
-      if (mounted) setState(() => _isSaving = false);
-    }
-  }
-
-  void _showSnack(String msg) {
-    if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(msg)));
-    }
-  }
+  Uint8List? _preview;
+  bool _rendering = false;
+  bool _saving = false;
 
   @override
   void dispose() {
-    _readingController.dispose();
-    _readingFocus.dispose();
-    _bannerAd?.dispose();
-    _interstitialAd?.dispose();
+    _ctrl.dispose();
+    _uiImage?.dispose();
     super.dispose();
   }
+
+  // ─── Image load ────────────────────────────────────────────────────
+
+  Future<void> _pick(ImageSource src) async {
+    final x = await ImagePicker().pickImage(source: src, imageQuality: 95);
+    if (x == null || !mounted) return;
+    final bytes = await File(x.path).readAsBytes();
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    if (!mounted) { frame.image.dispose(); return; }
+    _uiImage?.dispose();
+    setState(() {
+      _imageFile = File(x.path);
+      _uiImage   = frame.image;
+      _step = _Step.select;
+      _selA = _selB = null;
+      _preview = null;
+    });
+  }
+
+  // ─── Coordinate helpers ────────────────────────────────────────────
+
+  Rect? get _selScreen {
+    if (_selA == null || _selB == null) return null;
+    return Rect.fromPoints(_selA!, _selB!);
+  }
+
+  Rect? get _selImage {
+    final s = _selScreen;
+    if (s == null || _uiImage == null || _imgRect.isEmpty) return null;
+    final sw = _uiImage!.width  / _imgRect.width;
+    final sh = _uiImage!.height / _imgRect.height;
+    return Rect.fromLTRB(
+      ((s.left   - _imgRect.left) * sw).clamp(0.0, _uiImage!.width .toDouble()),
+      ((s.top    - _imgRect.top)  * sh).clamp(0.0, _uiImage!.height.toDouble()),
+      ((s.right  - _imgRect.left) * sw).clamp(0.0, _uiImage!.width .toDouble()),
+      ((s.bottom - _imgRect.top)  * sh).clamp(0.0, _uiImage!.height.toDouble()),
+    );
+  }
+
+  // ─── Rendering ─────────────────────────────────────────────────────
+
+  Future<Uint8List> _render(String reading) async {
+    final lcd = _selImage!;
+    final iw  = _uiImage!.width.toDouble();
+    final ih  = _uiImage!.height.toDouble();
+
+    final rec    = ui.PictureRecorder();
+    final canvas = Canvas(rec, Rect.fromLTWH(0, 0, iw, ih));
+
+    // Draw original image
+    canvas.drawImage(_uiImage!, Offset.zero, Paint());
+
+    // LCD background — very dark tint of the digit colour
+    final dc = _tmpl.displayColor;
+    canvas.drawRect(
+        lcd,
+        Paint()
+          ..color = Color.fromARGB(255,
+              (dc.red   * 0.07).round(),
+              (dc.green * 0.07).round(),
+              (dc.blue  * 0.07).round()));
+
+    // 7-segment digits
+    _drawString(canvas, reading, lcd, dc);
+
+    final pic = rec.endRecording();
+    final img = await pic.toImage(iw.toInt(), ih.toInt());
+    pic.dispose();
+    final bd = await img.toByteData(format: ui.ImageByteFormat.png);
+    img.dispose();
+    return bd!.buffer.asUint8List();
+  }
+
+  void _drawString(Canvas canvas, String text, Rect rect, Color on) {
+    if (text.isEmpty) return;
+    final off = Color.fromARGB(
+        255,
+        (on.red   * 0.10).round(),
+        (on.green * 0.10).round(),
+        (on.blue  * 0.10).round());
+
+    double units = 0;
+    for (final c in text.characters) {
+      units += c == '.' ? 0.35 : 1.0;
+    }
+    if (units == 0) return;
+
+    final padH  = rect.width  * 0.05;
+    final padV  = rect.height * 0.10;
+    final avW   = rect.width  - padH * 2;
+    final avH   = rect.height - padV * 2;
+    final gapFr = 0.04;
+    final n     = text.length;
+    final gapW  = avW * gapFr;
+    final charW = (avW - gapW * (n - 1)) / units;
+    final charH = avH;
+
+    double cx = rect.left + padH;
+    final cy  = rect.top  + padV;
+
+    for (final c in text.characters) {
+      if (c == '.') {
+        final dw = charW * 0.35;
+        final ds = (charH * 0.14).clamp(3.0, 14.0);
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromLTWH(cx + dw * 0.2, cy + charH - ds * 2, ds, ds),
+              const Radius.circular(3)),
+          Paint()..color = on);
+        cx += dw + gapW;
+        continue;
+      }
+      final s = _segs[c];
+      if (s != null) _drawDigit(canvas, s, Offset(cx, cy), Size(charW, charH), on, off);
+      cx += charW + gapW;
+    }
+  }
+
+  void _drawDigit(Canvas canvas, List<bool> s, Offset o,
+      Size sz, Color on, Color off) {
+    final t   = (sz.width * 0.14).clamp(2.5, 12.0);
+    final w   = sz.width;
+    final h   = sz.height;
+    final mid = h * 0.5;
+    final inn = t * 0.55;
+
+    void hSeg(bool active, double x, double y, double len) {
+      final p = Path()
+        ..moveTo(x + inn,       y)
+        ..lineTo(x + len - inn, y)
+        ..lineTo(x + len,       y + t * 0.5)
+        ..lineTo(x + len - inn, y + t)
+        ..lineTo(x + inn,       y + t)
+        ..lineTo(x,             y + t * 0.5)
+        ..close();
+      canvas.drawPath(p, Paint()..color = active ? on : off);
+    }
+
+    void vSeg(bool active, double x, double y, double len) {
+      final p = Path()
+        ..moveTo(x,           y + inn)
+        ..lineTo(x + t * 0.5, y)
+        ..lineTo(x + t,       y + inn)
+        ..lineTo(x + t,       y + len - inn)
+        ..lineTo(x + t * 0.5, y + len)
+        ..lineTo(x,           y + len - inn)
+        ..close();
+      canvas.drawPath(p, Paint()..color = active ? on : off);
+    }
+
+    hSeg(s[0], o.dx,         o.dy,                 w);
+    vSeg(s[1], o.dx + w - t, o.dy,                 mid);
+    vSeg(s[2], o.dx + w - t, o.dy + mid,           mid);
+    hSeg(s[3], o.dx,         o.dy + h - t,          w);
+    vSeg(s[4], o.dx,         o.dy + mid,           mid);
+    vSeg(s[5], o.dx,         o.dy,                 mid);
+    hSeg(s[6], o.dx,         o.dy + mid - t * 0.5, w);
+  }
+
+  Future<void> _buildPreview() async {
+    final r = _ctrl.text.trim();
+    if (r.isEmpty || _selImage == null) return;
+    setState(() { _rendering = true; _preview = null; });
+    try {
+      final b = await _render(r);
+      if (mounted) setState(() => _preview = b);
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Preview error: $e')));
+    } finally {
+      if (mounted) setState(() => _rendering = false);
+    }
+  }
+
+  Future<void> _saveShare() async {
+    final r = _ctrl.text.trim();
+    if (r.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Pehle reading type karein')));
+      return;
+    }
+    if (_selImage == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('LCD area select karein pehle')));
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      final bytes = await _render(r);
+      final dir   = await getTemporaryDirectory();
+      final ts    = DateTime.now();
+      final path  = '${dir.path}/meter_${ts.millisecondsSinceEpoch}.png';
+      await File(path).writeAsBytes(bytes);
+      await StorageService.instance.addHistory(
+          HistoryItem(filePath: path, reading: r, timestamp: ts));
+      if (!mounted) return;
+      await Share.shareXFiles([XFile(path)], text: 'Meter reading: $r');
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Error: $e')));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  // ─── UI ────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      resizeToAvoidBottomInset: false,
       backgroundColor: const Color(0xFF0A0A0A),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF141414),
-        title: Text(
-          'Offline Edit',
-          style: GoogleFonts.orbitron(color: const Color(0xFF00E5FF)),
-        ),
-        iconTheme: const IconThemeData(color: Color(0xFF00E5FF)),
+        backgroundColor: const Color(0xFF111111),
         elevation: 0,
+        leading: _step != _Step.pick
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back_ios_new,
+                    color: Colors.white70, size: 20),
+                onPressed: () => setState(() {
+                  if (_step == _Step.edit) {
+                    _step = _Step.select;
+                    _preview = null;
+                  } else {
+                    _step = _Step.pick;
+                    _uiImage?.dispose();
+                    _uiImage = null;
+                  }
+                }),
+              )
+            : null,
+        title: Text(
+          const ['Photo Lo', 'LCD Area Select Karo', 'Reading Edit Karo'][_step.index],
+          style: const TextStyle(
+              color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+        ),
         actions: [
-          if (_selectedImage != null)
-            IconButton(
-              icon: const Icon(Icons.refresh, color: Colors.white54),
-              tooltip: 'New photo',
-              onPressed: () => setState(() {
-                _selectedImage = null;
-                _readingController.clear();
-              }),
-            ),
+          if (_step == _Step.edit)
+            _saving
+                ? const Padding(
+                    padding: EdgeInsets.all(14),
+                    child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.cyan)))
+                : TextButton.icon(
+                    onPressed: _saveShare,
+                    icon: const Icon(Icons.save_alt,
+                        color: Colors.cyan, size: 18),
+                    label: const Text('Save',
+                        style: TextStyle(color: Colors.cyan, fontSize: 14)),
+                  ),
         ],
       ),
-      body: _selectedImage == null ? _buildPickerView() : _buildEditorView(),
+      body: switch (_step) {
+        _Step.pick   => _buildPickView(),
+        _Step.select => _buildSelectView(),
+        _Step.edit   => _buildEditView(),
+      },
     );
   }
 
-  Widget _buildTemplateSelector() {
-    return Container(
-      color: const Color(0xFF0F0F0F),
-      padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.style, color: Colors.white38, size: 13),
-              const SizedBox(width: 5),
-              Text(
-                'Display Template',
-                style: GoogleFonts.poppins(
-                    color: Colors.white38, fontSize: 11),
+  Widget _buildPickView() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(28),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                    color: const Color(0xFF00E5FF).withOpacity(0.3), width: 2),
+                color: const Color(0xFF00E5FF).withOpacity(0.05),
               ),
-            ],
-          ),
-          const SizedBox(height: 7),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: MeterTemplate.presets.map((t) {
-                final isSelected = _selectedTemplate.id == t.id;
-                return GestureDetector(
-                  onTap: () => _applyTemplate(t),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    margin: const EdgeInsets.only(right: 8),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: isSelected
-                          ? t.displayColor.withOpacity(0.18)
-                          : const Color(0xFF1A1A1A),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: isSelected ? t.displayColor : Colors.white12,
-                        width: isSelected ? 1.5 : 1,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 9,
-                          height: 9,
-                          decoration: BoxDecoration(
-                            color: t.displayColor,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          t.name,
-                          style: GoogleFonts.poppins(
-                            fontSize: 12,
-                            color: isSelected
-                                ? t.displayColor
-                                : Colors.white54,
-                            fontWeight: isSelected
-                                ? FontWeight.w600
-                                : FontWeight.normal,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }).toList(),
+              child: const Icon(Icons.electric_meter,
+                  size: 72, color: Color(0xFF00E5FF)),
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPickerView() {
-    return Column(
-      children: [
-        _buildTemplateSelector(),
-        Expanded(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF00E5FF).withOpacity(0.08),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.photo_camera,
-                        size: 64, color: Color(0xFF00E5FF)),
-                  ),
-                  const SizedBox(height: 24),
-                  Text(
-                    'Select Meter Photo',
-                    style: GoogleFonts.orbitron(
-                        fontSize: 20, color: const Color(0xFF00E5FF)),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Choose the meter photo you want to edit the reading on',
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.poppins(
-                        color: Colors.white38, fontSize: 13),
-                  ),
-                  const SizedBox(height: 40),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: () => _pickImage(ImageSource.camera),
-                          icon: const Icon(Icons.camera_alt),
-                          label: Text('Camera',
-                              style: GoogleFonts.poppins(fontSize: 15)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF00E5FF),
-                            foregroundColor: Colors.black,
-                            padding:
-                                const EdgeInsets.symmetric(vertical: 14),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: () => _pickImage(ImageSource.gallery),
-                          icon: const Icon(Icons.photo_library),
-                          label: Text('Gallery',
-                              style: GoogleFonts.poppins(fontSize: 15)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF1A1A1A),
-                            foregroundColor: Colors.white,
-                            side: const BorderSide(
-                                color: Color(0xFF00E5FF)),
-                            padding:
-                                const EdgeInsets.symmetric(vertical: 14),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+            const SizedBox(height: 28),
+            const Text(
+              'Meter ki photo lo ya gallery se upload karo',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white60, fontSize: 15),
             ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildEditorView() {
-    return Column(
-      children: [
-        _buildTemplateSelector(),
-        _buildReadingInputBar(),
-        Expanded(child: _buildImageCanvas()),
-        _buildControlsPanel(),
-        if (_isBannerAdLoaded && _bannerAd != null)
-          SizedBox(
-            width: _bannerAd!.size.width.toDouble(),
-            height: _bannerAd!.size.height.toDouble(),
-            child: AdWidget(ad: _bannerAd!),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildReadingInputBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      color: const Color(0xFF141414),
-      child: TextField(
-        controller: _readingController,
-        focusNode: _readingFocus,
-        keyboardType:
-            const TextInputType.numberWithOptions(decimal: true),
-        style: GoogleFonts.orbitron(
-          color: _textColor,
-          fontSize: 22,
-          letterSpacing: 3,
-        ),
-        decoration: InputDecoration(
-          hintText: '00000.00',
-          hintStyle: GoogleFonts.orbitron(
-            color: Colors.white12,
-            fontSize: 22,
-            letterSpacing: 3,
-          ),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(color: _textColor),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(color: _textColor.withOpacity(0.4)),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(color: _textColor, width: 2),
-          ),
-          filled: true,
-          fillColor: Colors.black,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          suffixText: 'kWh',
-          suffixStyle:
-              GoogleFonts.orbitron(color: Colors.white30, fontSize: 11),
-          prefixIcon: Icon(Icons.speed, color: _textColor, size: 20),
-        ),
-        onChanged: (_) => setState(() {}),
-        onTap: () => setState(() => _showDragHint = false),
-      ),
-    );
-  }
-
-  Widget _buildImageCanvas() {
-    return GestureDetector(
-      onTap: () => _readingFocus.unfocus(),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          return RepaintBoundary(
-            key: _repaintKey,
-            child: Stack(
+            const SizedBox(height: 40),
+            Row(
               children: [
-                Positioned.fill(
-                  child: Image.file(
-                    _selectedImage!,
-                    fit: BoxFit.contain,
-                  ),
-                ),
-                if (_readingController.text.isNotEmpty)
-                  Positioned(
-                    left: _overlayPosition.dx,
-                    top: _overlayPosition.dy,
-                    child: GestureDetector(
-                      onPanUpdate: (details) {
-                        setState(() {
-                          _showDragHint = false;
-                          _overlayPosition = Offset(
-                            (_overlayPosition.dx + details.delta.dx)
-                                .clamp(0.0, constraints.maxWidth - 40),
-                            (_overlayPosition.dy + details.delta.dy)
-                                .clamp(0.0, constraints.maxHeight - 30),
-                          );
-                        });
-                      },
-                      child: Container(
-                        padding: _hasBg
-                            ? const EdgeInsets.symmetric(
-                                horizontal: 6, vertical: 2)
-                            : EdgeInsets.zero,
-                        decoration: _hasBg
-                            ? BoxDecoration(
-                                color: Colors.black.withOpacity(0.55),
-                                borderRadius: BorderRadius.circular(4),
-                              )
-                            : null,
-                        child: Text(
-                          _readingController.text,
-                          style: GoogleFonts.orbitron(
-                            fontSize: _fontSize,
-                            color: _textColor,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: _selectedTemplate.letterSpacing,
-                            shadows: [
-                              Shadow(
-                                color: _textColor.withOpacity(0.7),
-                                blurRadius: 10,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                if (_showDragHint && _readingController.text.isNotEmpty)
-                  Positioned(
-                    bottom: 8,
-                    left: 0,
-                    right: 0,
-                    child: Center(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.65),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.open_with,
-                                color: Colors.white60, size: 14),
-                            const SizedBox(width: 6),
-                            Text(
-                              'Drag number to position',
-                              style: GoogleFonts.poppins(
-                                  color: Colors.white60, fontSize: 11),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
+                Expanded(child: _BigBtn(
+                  icon: Icons.camera_alt_rounded,
+                  label: 'Camera',
+                  color: const Color(0xFF00E5FF),
+                  onTap: () => _pick(ImageSource.camera),
+                )),
+                const SizedBox(width: 16),
+                Expanded(child: _BigBtn(
+                  icon: Icons.photo_library_rounded,
+                  label: 'Gallery',
+                  color: const Color(0xFFFFD600),
+                  onTap: () => _pick(ImageSource.gallery),
+                )),
               ],
             ),
-          );
-        },
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildControlsPanel() {
-    return Container(
-      color: const Color(0xFF141414),
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-      child: Column(
-        children: [
-          Row(
+  Widget _buildSelectView() {
+    if (_uiImage == null) return const SizedBox();
+    return Column(
+      children: [
+        Container(
+          color: const Color(0xFF161616),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
             children: [
-              const Icon(Icons.text_fields, color: Colors.white38, size: 16),
-              const SizedBox(width: 6),
-              Text('Size',
-                  style: GoogleFonts.poppins(
-                      color: Colors.white38, fontSize: 11)),
-              Expanded(
-                child: SliderTheme(
-                  data: SliderThemeData(
-                    activeTrackColor: _textColor,
-                    inactiveTrackColor: Colors.white24,
-                    thumbColor: _textColor,
-                    overlayColor: _textColor.withOpacity(0.2),
-                    trackHeight: 2,
-                    thumbShape:
-                        const RoundSliderThumbShape(enabledThumbRadius: 8),
-                  ),
-                  child: Slider(
-                    value: _fontSize,
-                    min: 14,
-                    max: 80,
-                    onChanged: (v) => setState(() => _fontSize = v),
-                  ),
-                ),
-              ),
-              Text(
-                '\${_fontSize.round()}',
-                style: GoogleFonts.orbitron(
-                    color: Colors.white38, fontSize: 10),
-              ),
-            ],
-          ),
-          Row(
-            children: [
-              Text('Color:',
-                  style: GoogleFonts.poppins(
-                      color: Colors.white38, fontSize: 11)),
+              const Icon(Icons.touch_app, color: Color(0xFF00E5FF), size: 18),
               const SizedBox(width: 8),
-              ..._colorOptions.map(
-                (c) => GestureDetector(
-                  onTap: () => setState(() => _textColor = c),
+              const Expanded(
+                child: Text('LCD digits pe finger rakh ke drag karo',
+                    style: TextStyle(color: Colors.white60, fontSize: 12)),
+              ),
+              if (_selScreen != null) ...[
+                GestureDetector(
+                  onTap: () => setState(() { _selA = _selB = null; }),
+                  child: const Text('Reset',
+                      style: TextStyle(color: Colors.red, fontSize: 12)),
+                ),
+                const SizedBox(width: 12),
+                GestureDetector(
+                  onTap: () => setState(() => _step = _Step.edit),
                   child: Container(
-                    margin: const EdgeInsets.only(right: 7),
-                    width: 22,
-                    height: 22,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
                     decoration: BoxDecoration(
-                      color: c,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: _textColor == c
-                            ? Colors.white
-                            : Colors.white24,
-                        width: _textColor == c ? 2.5 : 1,
-                      ),
-                    ),
+                        color: const Color(0xFF00E5FF),
+                        borderRadius: BorderRadius.circular(20)),
+                    child: const Text('Aage →',
+                        style: TextStyle(
+                            color: Colors.black,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold)),
                   ),
                 ),
-              ),
-              const Spacer(),
-              Text('BG',
-                  style: GoogleFonts.poppins(
-                      color: Colors.white38, fontSize: 11)),
-              Transform.scale(
-                scale: 0.8,
-                child: Switch(
-                  value: _hasBg,
-                  activeColor: const Color(0xFF00E5FF),
-                  inactiveThumbColor: Colors.white38,
-                  onChanged: (v) => setState(() => _hasBg = v),
-                ),
-              ),
+              ],
             ],
           ),
+        ),
+        Expanded(
+          child: LayoutBuilder(builder: (ctx, c) {
+            final iw = _uiImage!.width.toDouble();
+            final ih = _uiImage!.height.toDouble();
+            final scale = min(c.maxWidth / iw, c.maxHeight / ih);
+            final dw = iw * scale;
+            final dh = ih * scale;
+            _imgRect = Rect.fromLTWH(
+                (c.maxWidth - dw) / 2, (c.maxHeight - dh) / 2, dw, dh);
+
+            return GestureDetector(
+              onPanStart: (d) {
+                if (!_imgRect.contains(d.localPosition)) return;
+                setState(() {
+                  _selA = d.localPosition;
+                  _selB = d.localPosition;
+                  _dragging = true;
+                });
+              },
+              onPanUpdate: (d) {
+                if (!_dragging) return;
+                setState(() => _selB = Offset(
+                      d.localPosition.dx.clamp(_imgRect.left, _imgRect.right),
+                      d.localPosition.dy.clamp(_imgRect.top,  _imgRect.bottom),
+                    ));
+              },
+              onPanEnd: (_) => setState(() => _dragging = false),
+              child: CustomPaint(
+                size: Size(c.maxWidth, c.maxHeight),
+                painter: _SelectPainter(
+                    image: _uiImage!, imgRect: _imgRect, sel: _selScreen),
+              ),
+            );
+          }),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEditView() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text('Nai Reading:',
+              style: TextStyle(color: Colors.white54, fontSize: 12)),
           const SizedBox(height: 6),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _isSaving ? null : _saveAndShare,
-              icon: _isSaving
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.black),
-                    )
-                  : const Icon(Icons.share_rounded),
-              label: Text(
-                _isSaving ? 'Saving...' : 'Save & Share',
-                style: GoogleFonts.poppins(
-                    fontWeight: FontWeight.w700, fontSize: 15),
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF00E5FF),
-                foregroundColor: Colors.black,
-                disabledBackgroundColor: Colors.white24,
-                padding: const EdgeInsets.symmetric(vertical: 13),
-                shape: RoundedRectangleBorder(
+          TextField(
+            controller: _ctrl,
+            autofocus: true,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            onChanged: (_) => setState(() => _preview = null),
+            style: const TextStyle(
+                color: Color(0xFF00E5FF),
+                fontSize: 26,
+                letterSpacing: 6,
+                fontWeight: FontWeight.bold),
+            decoration: InputDecoration(
+              hintText: '12345.6',
+              hintStyle: TextStyle(
+                  color: Colors.white.withOpacity(0.15), letterSpacing: 2),
+              filled: true,
+              fillColor: const Color(0xFF0D1A1A),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
-                ),
-              ),
+                  borderSide: const BorderSide(color: Color(0xFF00E5FF))),
+              enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(
+                      color: const Color(0xFF00E5FF).withOpacity(0.25))),
+              focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide:
+                      const BorderSide(color: Color(0xFF00E5FF), width: 2)),
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Text('LCD Style:',
+              style: TextStyle(color: Colors.white54, fontSize: 12)),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 46,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: MeterTemplate.presets.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (_, i) {
+                final t   = MeterTemplate.presets[i];
+                final sel = t.id == _tmpl.id;
+                return GestureDetector(
+                  onTap: () => setState(() { _tmpl = t; _preview = null; }),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 150),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: sel
+                          ? t.displayColor.withOpacity(0.15)
+                          : const Color(0xFF1A1A1A),
+                      border: Border.all(
+                          color: sel
+                              ? t.displayColor
+                              : const Color(0xFF2A2A2A),
+                          width: sel ? 2 : 1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                              color: t.displayColor,
+                              shape: BoxShape.circle,
+                              boxShadow: sel
+                                  ? [BoxShadow(
+                                      color: t.displayColor.withOpacity(0.6),
+                                      blurRadius: 8)]
+                                  : null)),
+                      const SizedBox(width: 7),
+                      Text(t.name,
+                          style: TextStyle(
+                              color: sel ? t.displayColor : Colors.white38,
+                              fontSize: 12,
+                              fontWeight: sel
+                                  ? FontWeight.w600
+                                  : FontWeight.normal)),
+                    ]),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 20),
+          OutlinedButton.icon(
+            onPressed: _rendering ? null : _buildPreview,
+            icon: _rendering
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.cyan))
+                : const Icon(Icons.remove_red_eye_outlined,
+                    color: Colors.cyan, size: 18),
+            label: Text(_rendering ? 'Bana raha hai...' : 'Preview Dekho',
+                style: const TextStyle(color: Colors.cyan)),
+            style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.cyan),
+                padding: const EdgeInsets.symmetric(vertical: 12)),
+          ),
+          if (_preview != null) ...[
+            const SizedBox(height: 14),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.memory(_preview!, fit: BoxFit.contain),
+            ),
+          ],
+          const SizedBox(height: 20),
+          ElevatedButton.icon(
+            onPressed: _saving ? null : _saveShare,
+            icon: _saving
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.black))
+                : const Icon(Icons.save_alt, color: Colors.black, size: 20),
+            label: Text(_saving ? 'Save ho raha hai...' : 'Save & Share',
+                style: const TextStyle(
+                    color: Colors.black,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00E5FF),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _SelectPainter extends CustomPainter {
+  final ui.Image image;
+  final Rect imgRect;
+  final Rect? sel;
+  const _SelectPainter(
+      {required this.image, required this.imgRect, this.sel});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawImageRect(
+        image,
+        Rect.fromLTWH(
+            0, 0, image.width.toDouble(), image.height.toDouble()),
+        imgRect,
+        Paint());
+
+    if (sel == null) return;
+    final s   = sel!;
+    final dim = Paint()..color = Colors.black.withOpacity(0.55);
+
+    canvas.drawRect(Rect.fromLTRB(imgRect.left, imgRect.top, imgRect.right, s.top), dim);
+    canvas.drawRect(Rect.fromLTRB(imgRect.left, s.bottom, imgRect.right, imgRect.bottom), dim);
+    canvas.drawRect(Rect.fromLTRB(imgRect.left, s.top, s.left, s.bottom), dim);
+    canvas.drawRect(Rect.fromLTRB(s.right, s.top, imgRect.right, s.bottom), dim);
+
+    canvas.drawRect(
+        s,
+        Paint()
+          ..color = const Color(0xFF00E5FF)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5);
+
+    const hs = 8.0;
+    final hp = Paint()..color = const Color(0xFF00E5FF);
+    for (final pt in [s.topLeft, s.topRight, s.bottomLeft, s.bottomRight]) {
+      canvas.drawRect(Rect.fromCenter(center: pt, width: hs, height: hs), hp);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_SelectPainter o) =>
+      o.sel != sel || o.imgRect != imgRect;
+}
+
+class _BigBtn extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+  const _BigBtn(
+      {required this.icon,
+      required this.label,
+      required this.color,
+      required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 22),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.08),
+          border: Border.all(color: color.withOpacity(0.4), width: 1.5),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, color: color, size: 38),
+          const SizedBox(height: 8),
+          Text(label,
+              style: TextStyle(
+                  color: color, fontSize: 14, fontWeight: FontWeight.w600)),
+        ]),
       ),
     );
   }
