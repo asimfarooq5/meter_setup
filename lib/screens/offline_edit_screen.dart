@@ -146,12 +146,15 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
         }
 
         // LCD candidate pixel types (ordered: most common first)
+        // Grey/white reflective LCD: medium-grey range 110-208.
+        // Bright-white meter plastic (lum>208) and overexposed wall (lum>228)
+        // are intentionally excluded so they don't pollute the bounding box.
         final lcd =
-            (lum > 115 && lum < 232 && sat < 0.22) || // grey/white reflective LCD
+            (lum > 110 && lum < 208 && sat < 0.20) || // grey reflective LCD ← key fix
             (lum > 130 && sat > 0.18) ||               // bright + coloured
             (g > 90  && g > r * 1.35 && g > b * 1.25) || // green backlit
             (r > 140 && r > g * 1.3  && r > b * 2.0)  || // amber
-            (lum > 210 && sat < 0.12);                   // white LED
+            (lum > 215 && lum < 240 && sat < 0.10);       // white LED (not overexposed)
 
         if (lcd) candCnt[ci]++;
       }
@@ -171,8 +174,10 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     final maxV = grid.isEmpty ? 0 : grid.reduce(max);
     if (maxV < 8) return null;
 
-    // Higher threshold → tighter bounding box (avoids whole-image false positives)
-    final thr = (maxV * 0.42).toInt().clamp(8, 9999);
+    // High threshold → only high-confidence LCD cells included in bounding box.
+    // Bright plastic (lum>208, excluded) scores 0, so threshold of 0.58 cleanly
+    // isolates the LCD region from the surrounding meter body.
+    final thr = (maxV * 0.58).toInt().clamp(8, 9999);
     int mnx = gx, mxx = -1, mny = gy, mxy = -1;
     for (int cy = 0; cy < gy; cy++) {
       for (int cx = 0; cx < gx; cx++) {
