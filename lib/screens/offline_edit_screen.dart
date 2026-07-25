@@ -111,95 +111,102 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
   }
 
   // ─── Detection: returns (lcdRect, digitColor, bgColor) or null ─────
+  //
+  // Strategy: row/column density scan.
+  // 1. Count "gray LCD" pixels per row in the upper 62% of the image.
+  //    Gray LCD: lum 120-222, sat < 0.22 (excludes white plastic >222,
+  //    dark bezel <120, and coloured LEDs with sat>0.22).
+  // 2. Find the LONGEST consecutive run of rows where >22% of pixels are
+  //    gray — this is the horizontal band that contains the LCD panel.
+  // 3. Within that band, find columns where >20% of rows are gray — this
+  //    gives the left/right edges of the LCD.
+  // This is more robust than cell-scoring because it finds the CONTIGUOUS
+  // LCD band rather than scattered high-score cells that can be confused by
+  // handwriting, labels, or metal components below the LCD.
 
   (Rect, Color, Color)? _detect(ui.Image img, Uint8List px) {
     final w = img.width;
     final h = img.height;
+    final hScan = (h * 0.62).toInt();
 
-    // Only scan upper 55% — LCD is always in the upper portion of a meter
-    final hScan = (h * 0.55).toInt();
-
-    const gx = 48; const gy = 28;
-    final cw = w / gx; final ch = hScan / gy;
-    final candCnt  = List.filled(gx * gy, 0);
-    final edgeSum  = List.filled(gx * gy, 0);
-    final totalCnt = List.filled(gx * gy, 0);
-
-    for (int y = 0; y < hScan; y += 3) {
-      for (int x = 0; x < w; x += 3) {
-        final i  = (y * w + x) * 4;
-        final r  = px[i]; final g = px[i + 1]; final b = px[i + 2];
-        final mx = max(r, max(g, b));
-        final mn = min(r, min(g, b));
+    // ── Step 1: row gray-pixel count ──────────────────────────────────
+    final rowGray = List.filled(hScan, 0);
+    for (int y = 0; y < hScan; y++) {
+      for (int x = 0; x < w; x += 2) {
+        final i   = (y * w + x) * 4;
+        final r   = px[i]; final g = px[i + 1]; final b = px[i + 2];
+        final mx  = max(r, max(g, b));
+        final mn  = min(r, min(g, b));
         final lum = 0.299 * r + 0.587 * g + 0.114 * b;
         final sat = mx > 0 ? (mx - mn) / mx : 0.0;
-
-        final ci = (y / ch).floor().clamp(0, gy - 1) * gx +
-            (x / cw).floor().clamp(0, gx - 1);
-        totalCnt[ci]++;
-
-        // Horizontal edge (digit segments create strong local contrast)
-        if (x >= 3) {
-          final li   = (y * w + (x - 3)) * 4;
-          final llum = 0.299 * px[li] + 0.587 * px[li + 1] + 0.114 * px[li + 2];
-          edgeSum[ci] += (lum - llum).abs().toInt();
-        }
-
-        // LCD candidate pixel types (ordered: most common first)
-        // Grey/white reflective LCD: medium-grey range 110-208.
-        // Bright-white meter plastic (lum>208) and overexposed wall (lum>228)
-        // are intentionally excluded so they don't pollute the bounding box.
-        final lcd =
-            (lum > 110 && lum < 208 && sat < 0.20) || // grey reflective LCD ← key fix
-            (lum > 130 && sat > 0.18) ||               // bright + coloured
-            (g > 90  && g > r * 1.35 && g > b * 1.25) || // green backlit
-            (r > 140 && r > g * 1.3  && r > b * 2.0)  || // amber
-            (lum > 215 && lum < 240 && sat < 0.10);       // white LED (not overexposed)
-
-        if (lcd) candCnt[ci]++;
+        if (lum > 120 && lum < 222 && sat < 0.22) rowGray[y]++;
       }
     }
 
-    // Score: high candidate fraction × edge bonus
-    // Edge bonus rewards cells with digit-like texture over blank uniform walls
-    final grid = List.filled(gx * gy, 0);
-    for (int ci = 0; ci < gx * gy; ci++) {
-      if (totalCnt[ci] == 0) continue;
-      final candFrac = candCnt[ci] / totalCnt[ci];
-      final avgEdge  = edgeSum[ci]  / totalCnt[ci];
-      final edgeMul  = (avgEdge > 4 && avgEdge < 55) ? 1.6 : 1.0;
-      if (candFrac > 0.30) grid[ci] = (candFrac * 100 * edgeMul).toInt();
-    }
+    // Sampled at x-step 2 → max possible per row is w ~/ 2
+    final maxCols = w ~/ 2;
 
-    final maxV = grid.isEmpty ? 0 : grid.reduce(max);
-    if (maxV < 8) return null;
-
-    // High threshold → only high-confidence LCD cells included in bounding box.
-    // Bright plastic (lum>208, excluded) scores 0, so threshold of 0.58 cleanly
-    // isolates the LCD region from the surrounding meter body.
-    final thr = (maxV * 0.58).toInt().clamp(8, 9999);
-    int mnx = gx, mxx = -1, mny = gy, mxy = -1;
-    for (int cy = 0; cy < gy; cy++) {
-      for (int cx = 0; cx < gx; cx++) {
-        if (grid[cy * gx + cx] >= thr) {
-          if (cx < mnx) mnx = cx; if (cx > mxx) mxx = cx;
-          if (cy < mny) mny = cy; if (cy > mxy) mxy = cy;
-        }
+    // ── Step 2: longest consecutive run of "gray" rows (>22%) ─────────
+    int bestStart = -1, bestLen = 0;
+    int curStart  = -1, curLen  = 0;
+    for (int y = 0; y < hScan; y++) {
+      if (rowGray[y] / maxCols > 0.22) {
+        if (curStart < 0) curStart = y;
+        curLen++;
+        if (curLen > bestLen) { bestLen = curLen; bestStart = curStart; }
+      } else {
+        curStart = -1; curLen = 0;
       }
     }
-    if (mxx < 0) return null;
+    if (bestStart < 0 || bestLen < 10) return null;
 
-    double x0 = (mnx       * cw - cw * 0.1).clamp(0.0, w.toDouble());
-    double y0 = (mny       * ch - ch * 0.3 ).clamp(0.0, h.toDouble());
-    double x1 = ((mxx + 1) * cw + cw * 0.1).clamp(0.0, w.toDouble());
-    double y1 = ((mxy + 1) * ch + ch * 0.3 ).clamp(0.0, h.toDouble());
-    final rect = Rect.fromLTRB(x0, y0, x1, y1);
+    // Expand row band ±15% vertically for digit ascenders/descenders
+    final padV   = (bestLen * 0.15).round().clamp(3, 60);
+    final rowTop = (bestStart - padV).clamp(0, hScan);
+    final rowBot = (bestStart + bestLen + padV).clamp(0, hScan);
 
+    // ── Step 3: column gray-pixel count within the detected band ───────
+    final colGray = List.filled(w, 0);
+    for (int y = rowTop; y < rowBot; y += 2) {
+      for (int x = 0; x < w; x++) {
+        final i   = (y * w + x) * 4;
+        final r   = px[i]; final g = px[i + 1]; final b = px[i + 2];
+        final mx  = max(r, max(g, b));
+        final mn  = min(r, min(g, b));
+        final lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        final sat = mx > 0 ? (mx - mn) / mx : 0.0;
+        if (lum > 120 && lum < 222 && sat < 0.22) colGray[x]++;
+      }
+    }
+
+    // Sampled at y-step 2 within the band
+    final colH = (rowBot - rowTop) ~/ 2;
+    if (colH == 0) return null;
+
+    // Left/right boundary: first/last column with >20% gray rows
+    int lcdL = -1, lcdR = -1;
+    for (int x = 0; x < w; x++) {
+      if (colGray[x] / colH > 0.20) {
+        if (lcdL < 0) lcdL = x;
+        lcdR = x;
+      }
+    }
+    if (lcdL < 0) return null;
+
+    // Expand left/right by 2%
+    final padH = ((lcdR - lcdL) * 0.02).round().clamp(3, 40);
+    final rect = Rect.fromLTRB(
+      (lcdL - padH).toDouble().clamp(0.0, w.toDouble()),
+      rowTop.toDouble(),
+      (lcdR + padH).toDouble().clamp(0.0, w.toDouble()),
+      rowBot.toDouble(),
+    );
+
+    // ── Geometry validation ────────────────────────────────────────────
     final ar = rect.width / rect.height;
-    if (ar < 1.1 || ar > 14) return null;
-    if (rect.width < w * 0.05) return null;
-    // Reject if detection covers almost the entire scan area (uniform-white scene)
-    if (rect.width > w * 0.88 && rect.height > hScan * 0.65) return null;
+    if (ar < 1.5 || ar > 16) return null;
+    if (rect.width < w * 0.08) return null;
+    if (rect.width > w * 0.95 && rect.height > hScan * 0.70) return null;
 
     final colors = _sampleColors(px, w, h, rect);
     return (rect, colors.$2, colors.$1);
@@ -321,9 +328,10 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     final can = Canvas(rec, Rect.fromLTWH(0, 0, iw, ih));
 
     can.drawImage(_uiImage!, Offset.zero, Paint());
-    // No solid LCD fill — original texture preserved.
-    // Off-segments (bgColor) cover only the old digit marks;
-    // gaps between digits and padding remain as original photo pixels.
+    // Solid fill erases original digit marks. Histogram-mode bgColor
+    // closely matches the real LCD panel, so the filled rectangle
+    // blends with the surrounding meter photo.
+    can.drawRect(lcd, Paint()..color = _bgColor);
     _drawString(can, reading, lcd, _digitColor, _bgColor);
 
     final pic = rec.endRecording();
