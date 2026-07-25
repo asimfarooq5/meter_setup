@@ -114,12 +114,16 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     final w = img.width;
     final h = img.height;
 
-    // 60×60 coarse grid — score cells by count of LCD-candidate pixels
-    const gx = 60; const gy = 60;
-    final cw = w / gx; final ch = h / gy;
-    final grid = List.filled(gx * gy, 0);
+    // Only scan upper 55% — LCD is always in the upper portion of a meter
+    final hScan = (h * 0.55).toInt();
 
-    for (int y = 0; y < h; y += 3) {
+    const gx = 48; const gy = 28;
+    final cw = w / gx; final ch = hScan / gy;
+    final candCnt  = List.filled(gx * gy, 0);
+    final edgeSum  = List.filled(gx * gy, 0);
+    final totalCnt = List.filled(gx * gy, 0);
+
+    for (int y = 0; y < hScan; y += 3) {
       for (int x = 0; x < w; x += 3) {
         final i  = (y * w + x) * 4;
         final r  = px[i]; final g = px[i + 1]; final b = px[i + 2];
@@ -128,51 +132,70 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
         final lum = 0.299 * r + 0.587 * g + 0.114 * b;
         final sat = mx > 0 ? (mx - mn) / mx : 0.0;
 
-        // LCD segment: bright+colored, green-dominant, amber, or white LED
-        final lcd = (lum > 130 && sat > 0.18) ||
-            (g > 90  && g > r * 1.4 && g > b * 1.3) ||
-            (r > 140 && r > g * 1.3 && r > b * 2.0) ||
-            (lum > 210 && sat < 0.15);
+        final ci = (y / ch).floor().clamp(0, gy - 1) * gx +
+            (x / cw).floor().clamp(0, gx - 1);
+        totalCnt[ci]++;
 
-        if (lcd) {
-          final ci = (y / ch).floor().clamp(0, gy - 1) * gx +
-              (x / cw).floor().clamp(0, gx - 1);
-          grid[ci]++;
+        // Horizontal edge (digit segments create strong local contrast)
+        if (x >= 3) {
+          final li   = (y * w + (x - 3)) * 4;
+          final llum = 0.299 * px[li] + 0.587 * px[li + 1] + 0.114 * px[li + 2];
+          edgeSum[ci] += (lum - llum).abs().toInt();
         }
+
+        // LCD candidate pixel types (ordered: most common first)
+        final lcd =
+            (lum > 115 && lum < 232 && sat < 0.22) || // grey/white reflective LCD
+            (lum > 130 && sat > 0.18) ||               // bright + coloured
+            (g > 90  && g > r * 1.35 && g > b * 1.25) || // green backlit
+            (r > 140 && r > g * 1.3  && r > b * 2.0)  || // amber
+            (lum > 210 && sat < 0.12);                   // white LED
+
+        if (lcd) candCnt[ci]++;
       }
     }
 
-    final maxV = grid.reduce(max);
+    // Score: high candidate fraction × edge bonus
+    // Edge bonus rewards cells with digit-like texture over blank uniform walls
+    final grid = List.filled(gx * gy, 0);
+    for (int ci = 0; ci < gx * gy; ci++) {
+      if (totalCnt[ci] == 0) continue;
+      final candFrac = candCnt[ci] / totalCnt[ci];
+      final avgEdge  = edgeSum[ci]  / totalCnt[ci];
+      final edgeMul  = (avgEdge > 4 && avgEdge < 55) ? 1.6 : 1.0;
+      if (candFrac > 0.30) grid[ci] = (candFrac * 100 * edgeMul).toInt();
+    }
+
+    final maxV = grid.isEmpty ? 0 : grid.reduce(max);
     if (maxV < 8) return null;
 
-    final thr = (maxV * 0.18).toInt().clamp(4, 9999);
+    // Higher threshold → tighter bounding box (avoids whole-image false positives)
+    final thr = (maxV * 0.42).toInt().clamp(8, 9999);
     int mnx = gx, mxx = -1, mny = gy, mxy = -1;
     for (int cy = 0; cy < gy; cy++) {
       for (int cx = 0; cx < gx; cx++) {
         if (grid[cy * gx + cx] >= thr) {
-          if (cx < mnx) mnx = cx;
-          if (cx > mxx) mxx = cx;
-          if (cy < mny) mny = cy;
-          if (cy > mxy) mxy = cy;
+          if (cx < mnx) mnx = cx; if (cx > mxx) mxx = cx;
+          if (cy < mny) mny = cy; if (cy > mxy) mxy = cy;
         }
       }
     }
     if (mxx < 0) return null;
 
-    // Add padding and clamp
-    double x0 = (mnx * cw - cw * 0.1).clamp(0.0, w.toDouble());
-    double y0 = (mny * ch - ch * 0.35).clamp(0.0, h.toDouble());
+    double x0 = (mnx       * cw - cw * 0.1).clamp(0.0, w.toDouble());
+    double y0 = (mny       * ch - ch * 0.3 ).clamp(0.0, h.toDouble());
     double x1 = ((mxx + 1) * cw + cw * 0.1).clamp(0.0, w.toDouble());
-    double y1 = ((mxy + 1) * ch + ch * 0.35).clamp(0.0, h.toDouble());
+    double y1 = ((mxy + 1) * ch + ch * 0.3 ).clamp(0.0, h.toDouble());
     final rect = Rect.fromLTRB(x0, y0, x1, y1);
 
-    // Validate: wider than tall, reasonable size
     final ar = rect.width / rect.height;
-    if (ar < 1.2 || ar > 12) return null;
-    if (rect.width < w * 0.08) return null;
+    if (ar < 1.1 || ar > 14) return null;
+    if (rect.width < w * 0.05) return null;
+    // Reject if detection covers almost the entire scan area (uniform-white scene)
+    if (rect.width > w * 0.88 && rect.height > hScan * 0.65) return null;
 
     final colors = _sampleColors(px, w, h, rect);
-    return (rect, colors.$2, colors.$1); // (rect, digitColor, bgColor)
+    return (rect, colors.$2, colors.$1);
   }
 
   // Sample average color of LCD region → bg fill color
@@ -522,21 +545,23 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
           onPanUpdate: (d) => setState(() => _selB = d.localPosition),
           onPanEnd:    (_) {},
           child: LayoutBuilder(builder: (_, cons) {
-            final w  = _uiImage!.width.toDouble();
-            final h  = _uiImage!.height.toDouble();
-            final sc = min(cons.maxWidth / w, cons.maxHeight / h);
-            final rw = w * sc; final rh = h * sc;
-            final ox = (cons.maxWidth  - rw) / 2;
-            final oy = (cons.maxHeight - rh) / 2;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              final nr = Rect.fromLTWH(ox, oy, rw, rh);
-              if (mounted && nr != _imgRect) setState(() => _imgRect = nr);
-            });
-            return CustomPaint(
-              painter: _SelectPainter(
-                image: _uiImage!,
-                imgRect: Rect.fromLTWH(ox, oy, rw, rh),
-                selection: _selScreen,
+            final imgW = _uiImage!.width.toDouble();
+            final imgH = _uiImage!.height.toDouble();
+            final sc   = min(cons.maxWidth / imgW, cons.maxHeight / imgH);
+            final rw   = imgW * sc; final rh = imgH * sc;
+            final ox   = (cons.maxWidth  - rw) / 2;
+            final oy   = (cons.maxHeight - rh) / 2;
+            // Update directly — no setState needed; only used for gesture mapping
+            _imgRect = Rect.fromLTWH(ox, oy, rw, rh);
+            return SizedBox(
+              width:  cons.maxWidth,
+              height: cons.maxHeight,
+              child: CustomPaint(
+                painter: _SelectPainter(
+                  image:    _uiImage!,
+                  imgRect:  _imgRect,
+                  selection: _selScreen,
+                ),
               ),
             );
           }),
