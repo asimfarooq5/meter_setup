@@ -232,19 +232,35 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     final idx = List.generate(rs.length, (i) => i)
       ..sort((a, b) => lums[a].compareTo(lums[b]));
 
-    // Top 40% brightest → background (LCD panel colour, no segments)
-    final bgStart = (idx.length * 0.60).toInt();
-    int tr = 0, tg = 0, tb = 0;
-    for (int k = bgStart; k < idx.length; k++) {
-      tr += rs[idx[k]]; tg += gs[idx[k]]; tb += bs[idx[k]];
+    // Histogram mode for background: find the most common luminance bucket
+    // among the brighter half of pixels. This gives the exact LCD panel color
+    // rather than an average that drifts when dark digit marks are present.
+    const bucketSz  = 8;
+    const numBucket = 32; // 256 / bucketSz
+    final bCnt = List.filled(numBucket, 0);
+    final bR   = List.filled(numBucket, 0);
+    final bG   = List.filled(numBucket, 0);
+    final bB   = List.filled(numBucket, 0);
+    final medLum = lums[idx[idx.length ~/ 2]];
+    for (int k = 0; k < rs.length; k++) {
+      if (lums[k] >= medLum) {
+        final b = (lums[k] / bucketSz).floor().clamp(0, numBucket - 1);
+        bCnt[b]++; bR[b] += rs[k]; bG[b] += gs[k]; bB[b] += bs[k];
+      }
     }
-    final bgCnt = idx.length - bgStart;
-    final bgR = tr ~/ bgCnt; final bgG = tg ~/ bgCnt; final bgB = tb ~/ bgCnt;
+    int best = 0;
+    for (int i = 1; i < numBucket; i++) {
+      if (bCnt[i] > bCnt[best]) best = i;
+    }
+    final bgCnt = bCnt[best].clamp(1, 999999);
+    final bgR = bR[best] ~/ bgCnt;
+    final bgG = bG[best] ~/ bgCnt;
+    final bgB = bB[best] ~/ bgCnt;
     final bgLum = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB;
 
     // Bottom 20% darkest → digit segment colour (actual dark pixels in photo)
     final segEnd = (idx.length * 0.20).toInt().clamp(1, idx.length);
-    tr = 0; tg = 0; tb = 0;
+    int tr = 0, tg = 0, tb = 0;
     for (int k = 0; k < segEnd; k++) {
       tr += rs[idx[k]]; tg += gs[idx[k]]; tb += bs[idx[k]];
     }
@@ -305,12 +321,9 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     final can = Canvas(rec, Rect.fromLTWH(0, 0, iw, ih));
 
     can.drawImage(_uiImage!, Offset.zero, Paint());
-    can.drawRect(lcd, Paint()
-      ..color = Color.fromARGB(255,
-          (_bgColor.r * 255).round(),
-          (_bgColor.g * 255).round(),
-          (_bgColor.b * 255).round()));
-    // Off segments = bgColor (invisible) → natural reflective LCD look
+    // No solid LCD fill — original texture preserved.
+    // Off-segments (bgColor) cover only the old digit marks;
+    // gaps between digits and padding remain as original photo pixels.
     _drawString(can, reading, lcd, _digitColor, _bgColor);
 
     final pic = rec.endRecording();
@@ -355,7 +368,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
 
   void _drawDigit(Canvas can, List<bool> s, Offset o, Size sz,
       Color on, Color off) {
-    final t   = (sz.width * 0.14).clamp(2.5, 12.0);
+    final t   = (sz.height * 0.11).clamp(2.5, 14.0);
     final w   = sz.width;
     final h   = sz.height;
     final mid = h * 0.5;
