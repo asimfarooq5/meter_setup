@@ -9,7 +9,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/history_item.dart';
-import '../models/meter_template.dart';
 import '../services/storage_service.dart';
 
 // 7-segment: [top, top-right, bot-right, bottom, bot-left, top-left, middle]
@@ -37,18 +36,23 @@ class OfflineEditScreen extends StatefulWidget {
 class _OfflineEditScreenState extends State<OfflineEditScreen> {
   _Step _step = _Step.pick;
 
-  ui.Image? _uiImage;
+  Uint8List? _imgBytes;   // original file bytes for Image.memory display
+  ui.Image?  _uiImage;    // decoded ui.Image for canvas rendering
+  Uint8List? _rawPx;      // RGBA pixels for detection + color sampling
 
+  Rect?  _lcdRect;        // LCD area in image pixel coords
+  Color  _digitColor = const Color(0xFF00FF40);
+  Color  _bgColor    = Colors.black;
+
+  // Manual select fallback
   Offset? _selA, _selB;
-  bool _dragging = false;
-  Rect _imgRect = Rect.zero;
+  Rect    _imgRect = Rect.zero;
 
-  final _ctrl = TextEditingController();
-  MeterTemplate _tmpl = MeterTemplate.presets[0];
-
+  final _ctrl    = TextEditingController();
   Uint8List? _preview;
+  bool _detecting = false;
   bool _rendering = false;
-  bool _saving = false;
+  bool _saving    = false;
 
   @override
   void dispose() {
@@ -57,30 +61,150 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     super.dispose();
   }
 
-  // ─── Image load ────────────────────────────────────────────────────
+  // ─── Pick & auto-detect ────────────────────────────────────────────
 
   Future<void> _pick(ImageSource src) async {
     final x = await ImagePicker().pickImage(source: src, imageQuality: 95);
     if (x == null || !mounted) return;
+
     final bytes = await File(x.path).readAsBytes();
     final codec = await ui.instantiateImageCodec(bytes);
     final frame = await codec.getNextFrame();
     if (!mounted) { frame.image.dispose(); return; }
+
     _uiImage?.dispose();
+    final img = frame.image;
+    final bd  = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+    if (!mounted) { img.dispose(); return; }
+
     setState(() {
-      _uiImage = frame.image;
-      _step = _Step.select;
+      _imgBytes  = bytes;
+      _uiImage   = img;
+      _rawPx     = bd?.buffer.asUint8List();
+      _lcdRect   = null;
       _selA = _selB = null;
-      _preview = null;
+      _preview   = null;
+      _detecting = true;
+      _step      = _Step.pick;
     });
+
+    // Yield so spinner paints before detection blocks the thread
+    await Future.delayed(Duration.zero);
+    if (!mounted) return;
+
+    final det = _rawPx != null ? _detect(img, _rawPx!) : null;
+
+    if (!mounted) return;
+    if (det != null) {
+      setState(() {
+        _lcdRect    = det.$1;
+        _digitColor = det.$2;
+        _bgColor    = det.$3;
+        _detecting  = false;
+        _step       = _Step.edit;
+      });
+    } else {
+      setState(() { _detecting = false; _step = _Step.select; });
+    }
   }
 
-  // ─── Coordinate helpers ────────────────────────────────────────────
+  // ─── Detection: returns (lcdRect, digitColor, bgColor) or null ─────
 
-  Rect? get _selScreen {
-    if (_selA == null || _selB == null) return null;
-    return Rect.fromPoints(_selA!, _selB!);
+  (Rect, Color, Color)? _detect(ui.Image img, Uint8List px) {
+    final w = img.width;
+    final h = img.height;
+
+    // 60×60 coarse grid — score cells by count of LCD-candidate pixels
+    const gx = 60; const gy = 60;
+    final cw = w / gx; final ch = h / gy;
+    final grid = List.filled(gx * gy, 0);
+
+    for (int y = 0; y < h; y += 3) {
+      for (int x = 0; x < w; x += 3) {
+        final i  = (y * w + x) * 4;
+        final r  = px[i]; final g = px[i + 1]; final b = px[i + 2];
+        final mx = max(r, max(g, b));
+        final mn = min(r, min(g, b));
+        final lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        final sat = mx > 0 ? (mx - mn) / mx : 0.0;
+
+        // LCD segment: bright+colored, green-dominant, amber, or white LED
+        final lcd = (lum > 130 && sat > 0.18) ||
+            (g > 90  && g > r * 1.4 && g > b * 1.3) ||
+            (r > 140 && r > g * 1.3 && r > b * 2.0) ||
+            (lum > 210 && sat < 0.15);
+
+        if (lcd) {
+          final ci = (y / ch).floor().clamp(0, gy - 1) * gx +
+              (x / cw).floor().clamp(0, gx - 1);
+          grid[ci]++;
+        }
+      }
+    }
+
+    final maxV = grid.reduce(max);
+    if (maxV < 8) return null;
+
+    final thr = (maxV * 0.18).toInt().clamp(4, 9999);
+    int mnx = gx, mxx = -1, mny = gy, mxy = -1;
+    for (int cy = 0; cy < gy; cy++) {
+      for (int cx = 0; cx < gx; cx++) {
+        if (grid[cy * gx + cx] >= thr) {
+          if (cx < mnx) mnx = cx;
+          if (cx > mxx) mxx = cx;
+          if (cy < mny) mny = cy;
+          if (cy > mxy) mxy = cy;
+        }
+      }
+    }
+    if (mxx < 0) return null;
+
+    // Add padding and clamp
+    double x0 = (mnx * cw - cw * 0.1).clamp(0.0, w.toDouble());
+    double y0 = (mny * ch - ch * 0.35).clamp(0.0, h.toDouble());
+    double x1 = ((mxx + 1) * cw + cw * 0.1).clamp(0.0, w.toDouble());
+    double y1 = ((mxy + 1) * ch + ch * 0.35).clamp(0.0, h.toDouble());
+    final rect = Rect.fromLTRB(x0, y0, x1, y1);
+
+    // Validate: wider than tall, reasonable size
+    final ar = rect.width / rect.height;
+    if (ar < 1.2 || ar > 12) return null;
+    if (rect.width < w * 0.08) return null;
+
+    final colors = _sampleColors(px, w, h, rect);
+    return (rect, colors.$2, colors.$1); // (rect, digitColor, bgColor)
   }
+
+  // Sample average color of LCD region → bg fill color
+  // Digit color = bg darkened to ~52% (real reflective LCD look)
+  (Color, Color) _sampleColors(Uint8List px, int w, int h, Rect rect) {
+    int tr = 0, tg = 0, tb = 0, cnt = 0;
+    final y0 = rect.top.round().clamp(0, h - 1);
+    final y1 = rect.bottom.round().clamp(0, h);
+    final x0 = rect.left.round().clamp(0, w - 1);
+    final x1 = rect.right.round().clamp(0, w);
+    for (int y = y0; y < y1; y += 3) {
+      for (int x = x0; x < x1; x += 3) {
+        final i = (y * w + x) * 4;
+        tr += px[i]; tg += px[i + 1]; tb += px[i + 2]; cnt++;
+      }
+    }
+    if (cnt == 0) {
+      return (const Color(0xFF808080), const Color(0xFF404040));
+    }
+    final bgR = tr ~/ cnt; final bgG = tg ~/ cnt; final bgB = tb ~/ cnt;
+    final bg  = Color.fromARGB(255, bgR, bgG, bgB);
+    // Active segments: 52% of bg brightness → naturally darker, same hue
+    final dig = Color.fromARGB(255,
+        (bgR * 0.52).round(), (bgG * 0.52).round(), (bgB * 0.52).round());
+    return (bg, dig);  // (bgColor, digitColor)
+  }
+
+  // ─── Manual select (fallback) ──────────────────────────────────────
+
+  Rect? get _selScreen => (_selA != null && _selB != null)
+      ? Rect.fromPoints(_selA!, _selB!)
+      : null;
 
   Rect? get _selImage {
     final s = _selScreen;
@@ -88,123 +212,114 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     final sw = _uiImage!.width  / _imgRect.width;
     final sh = _uiImage!.height / _imgRect.height;
     return Rect.fromLTRB(
-      ((s.left   - _imgRect.left) * sw).clamp(0.0, _uiImage!.width .toDouble()),
+      ((s.left   - _imgRect.left) * sw).clamp(0.0, _uiImage!.width.toDouble()),
       ((s.top    - _imgRect.top)  * sh).clamp(0.0, _uiImage!.height.toDouble()),
-      ((s.right  - _imgRect.left) * sw).clamp(0.0, _uiImage!.width .toDouble()),
+      ((s.right  - _imgRect.left) * sw).clamp(0.0, _uiImage!.width.toDouble()),
       ((s.bottom - _imgRect.top)  * sh).clamp(0.0, _uiImage!.height.toDouble()),
     );
+  }
+
+  void _confirmManualSelect() {
+    final r = _selImage;
+    if (r == null || _rawPx == null) return;
+    final c = _sampleColors(_rawPx!, _uiImage!.width, _uiImage!.height, r);
+    setState(() {
+      _lcdRect    = r;
+      _digitColor = c.$2; // darkened digit color
+      _bgColor    = c.$1; // average bg color
+      _step       = _Step.edit;
+    });
   }
 
   // ─── Rendering ─────────────────────────────────────────────────────
 
   Future<Uint8List> _render(String reading) async {
-    final lcd = _selImage!;
+    final lcd = _lcdRect!;
     final iw  = _uiImage!.width.toDouble();
     final ih  = _uiImage!.height.toDouble();
+    final rec = ui.PictureRecorder();
+    final can = Canvas(rec, Rect.fromLTWH(0, 0, iw, ih));
 
-    final rec    = ui.PictureRecorder();
-    final canvas = Canvas(rec, Rect.fromLTWH(0, 0, iw, ih));
-
-    // Draw original image
-    canvas.drawImage(_uiImage!, Offset.zero, Paint());
-
-    // LCD background — very dark tint of the digit colour
-    final dc = _tmpl.displayColor;
-    canvas.drawRect(
-        lcd,
-        Paint()
-          ..color = Color.fromARGB(255,
-              (dc.r * 255 * 0.07).round(),
-              (dc.g * 255 * 0.07).round(),
-              (dc.b * 255 * 0.07).round()));
-
-    // 7-segment digits
-    _drawString(canvas, reading, lcd, dc);
+    can.drawImage(_uiImage!, Offset.zero, Paint());
+    can.drawRect(lcd, Paint()
+      ..color = Color.fromARGB(255,
+          (_bgColor.r * 255).round(),
+          (_bgColor.g * 255).round(),
+          (_bgColor.b * 255).round()));
+    // Off segments = bgColor (invisible) → natural reflective LCD look
+    _drawString(can, reading, lcd, _digitColor, _bgColor);
 
     final pic = rec.endRecording();
-    final img = await pic.toImage(iw.toInt(), ih.toInt());
+    final out = await pic.toImage(iw.toInt(), ih.toInt());
     pic.dispose();
-    final bd = await img.toByteData(format: ui.ImageByteFormat.png);
-    img.dispose();
+    final bd = await out.toByteData(format: ui.ImageByteFormat.png);
+    out.dispose();
     return bd!.buffer.asUint8List();
   }
 
-  void _drawString(Canvas canvas, String text, Rect rect, Color on) {
+  void _drawString(Canvas can, String text, Rect rect, Color on, Color off) {
     if (text.isEmpty) return;
-    final off = Color.fromARGB(
-        255,
-        (on.r * 255 * 0.10).round(),
-        (on.g * 255 * 0.10).round(),
-        (on.b * 255 * 0.10).round());
-
     double units = 0;
-    for (final c in text.characters) {
-      units += c == '.' ? 0.35 : 1.0;
-    }
+    for (final c in text.characters) units += c == '.' ? 0.35 : 1.0;
     if (units == 0) return;
-
-    final padH  = rect.width  * 0.05;
-    final padV  = rect.height * 0.10;
-    final avW   = rect.width  - padH * 2;
-    final avH   = rect.height - padV * 2;
-    final gapFr = 0.04;
-    final n     = text.length;
-    final gapW  = avW * gapFr;
-    final charW = (avW - gapW * (n - 1)) / units;
-    final charH = avH;
-
-    double cx = rect.left + padH;
-    final cy  = rect.top  + padV;
-
+    final padH = rect.width  * 0.05;
+    final padV = rect.height * 0.10;
+    final avW  = rect.width  - padH * 2;
+    final avH  = rect.height - padV * 2;
+    final gapW = avW * 0.04;
+    final cW   = (avW - gapW * (text.length - 1)) / units;
+    final cH   = avH;
+    double cx  = rect.left + padH;
+    final cy   = rect.top  + padV;
     for (final c in text.characters) {
       if (c == '.') {
-        final dw = charW * 0.35;
-        final ds = (charH * 0.14).clamp(3.0, 14.0);
-        canvas.drawRRect(
+        final dw = cW * 0.35;
+        final ds = (cH * 0.14).clamp(3.0, 14.0);
+        can.drawRRect(
           RRect.fromRectAndRadius(
-              Rect.fromLTWH(cx + dw * 0.2, cy + charH - ds * 2, ds, ds),
+              Rect.fromLTWH(cx + dw * 0.2, cy + cH - ds * 2, ds, ds),
               const Radius.circular(3)),
           Paint()..color = on);
         cx += dw + gapW;
         continue;
       }
       final s = _segs[c];
-      if (s != null) _drawDigit(canvas, s, Offset(cx, cy), Size(charW, charH), on, off);
-      cx += charW + gapW;
+      if (s != null) _drawDigit(can, s, Offset(cx, cy), Size(cW, cH), on, off);
+      cx += cW + gapW;
     }
   }
 
-  void _drawDigit(Canvas canvas, List<bool> s, Offset o,
-      Size sz, Color on, Color off) {
+  void _drawDigit(Canvas can, List<bool> s, Offset o, Size sz,
+      Color on, Color off) {
     final t   = (sz.width * 0.14).clamp(2.5, 12.0);
     final w   = sz.width;
     final h   = sz.height;
     final mid = h * 0.5;
     final inn = t * 0.55;
 
-    void hSeg(bool active, double x, double y, double len) {
-      final p = Path()
-        ..moveTo(x + inn,       y)
-        ..lineTo(x + len - inn, y)
-        ..lineTo(x + len,       y + t * 0.5)
-        ..lineTo(x + len - inn, y + t)
-        ..lineTo(x + inn,       y + t)
-        ..lineTo(x,             y + t * 0.5)
-        ..close();
-      canvas.drawPath(p, Paint()..color = active ? on : off);
-    }
+    void hSeg(bool a, double x, double y, double len) =>
+        can.drawPath(
+            Path()
+              ..moveTo(x + inn,       y)
+              ..lineTo(x + len - inn, y)
+              ..lineTo(x + len,       y + t * 0.5)
+              ..lineTo(x + len - inn, y + t)
+              ..lineTo(x + inn,       y + t)
+              ..lineTo(x,             y + t * 0.5)
+              ..close(),
+            Paint()..color = a ? on : off);
 
-    void vSeg(bool active, double x, double y, double len) {
-      final p = Path()
-        ..moveTo(x,           y + inn)
-        ..lineTo(x + t * 0.5, y)
-        ..lineTo(x + t,       y + inn)
-        ..lineTo(x + t,       y + len - inn)
-        ..lineTo(x + t * 0.5, y + len)
-        ..lineTo(x,           y + len - inn)
-        ..close();
-      canvas.drawPath(p, Paint()..color = active ? on : off);
-    }
+    void vSeg(bool a, double x, double y, double len) =>
+        can.drawPath(
+            Path()
+              ..moveTo(x,           y + inn)
+              ..lineTo(x + t * 0.5, y)
+              ..lineTo(x + t,       y + inn)
+              ..lineTo(x + t,       y + len - inn)
+              ..lineTo(x + t * 0.5, y + len)
+              ..lineTo(x,           y + len - inn)
+              ..close(),
+            Paint()..color = a ? on : off);
 
     hSeg(s[0], o.dx,         o.dy,                 w);
     vSeg(s[1], o.dx + w - t, o.dy,                 mid);
@@ -217,14 +332,14 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
 
   Future<void> _buildPreview() async {
     final r = _ctrl.text.trim();
-    if (r.isEmpty || _selImage == null) return;
+    if (r.isEmpty || _lcdRect == null) return;
     setState(() { _rendering = true; _preview = null; });
     try {
       final b = await _render(r);
       if (mounted) setState(() => _preview = b);
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Preview error: $e')));
+          .showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
       if (mounted) setState(() => _rendering = false);
     }
@@ -233,13 +348,8 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
   Future<void> _saveShare() async {
     final r = _ctrl.text.trim();
     if (r.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Pehle reading type karein')));
-      return;
-    }
-    if (_selImage == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('LCD area select karein pehle')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Reading type karein')));
       return;
     }
     setState(() => _saving = true);
@@ -249,8 +359,8 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
       final ts    = DateTime.now();
       final path  = '${dir.path}/meter_${ts.millisecondsSinceEpoch}.png';
       await File(path).writeAsBytes(bytes);
-      await StorageService.instance.addHistory(
-          HistoryItem(filePath: path, reading: r, timestamp: ts));
+      await StorageService.instance
+          .addHistory(HistoryItem(filePath: path, reading: r, timestamp: ts));
       if (!mounted) return;
       await Share.shareXFiles([XFile(path)], text: 'Meter reading: $r');
     } catch (e) {
@@ -287,7 +397,10 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
               )
             : null,
         title: Text(
-          const ['Photo Lo', 'LCD Area Select Karo', 'Reading Edit Karo'][_step.index],
+          _detecting
+              ? 'LCD Detect Ho Raha Hai...'
+              : ['Meter Photo Lo', 'LCD Area Select Karo',
+                  'Reading Likhо'][_step.index],
           style: const TextStyle(
               color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
         ),
@@ -297,8 +410,7 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
                 ? const Padding(
                     padding: EdgeInsets.all(14),
                     child: SizedBox(
-                        width: 20,
-                        height: 20,
+                        width: 20, height: 20,
                         child: CircularProgressIndicator(
                             strokeWidth: 2, color: Colors.cyan)))
                 : TextButton.icon(
@@ -318,7 +430,19 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
     );
   }
 
+  // Step 1: pick (or spinner while detecting)
   Widget _buildPickView() {
+    if (_detecting) {
+      return Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const CircularProgressIndicator(color: Color(0xFF00E5FF)),
+          const SizedBox(height: 20),
+          Text('LCD area dhundh raha hai...',
+              style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.5), fontSize: 14)),
+        ]),
+      );
+    }
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -330,7 +454,8 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 border: Border.all(
-                    color: const Color(0xFF00E5FF).withValues(alpha: 0.3), width: 2),
+                    color: const Color(0xFF00E5FF).withValues(alpha: 0.3),
+                    width: 2),
                 color: const Color(0xFF00E5FF).withValues(alpha: 0.05),
               ),
               child: const Icon(Icons.electric_meter,
@@ -338,254 +463,225 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
             ),
             const SizedBox(height: 28),
             const Text(
-              'Meter ki photo lo ya gallery se upload karo',
+              'Photo lo — LCD area aur rang automatically detect hoga',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.white60, fontSize: 15),
             ),
             const SizedBox(height: 40),
-            Row(
-              children: [
-                Expanded(child: _BigBtn(
-                  icon: Icons.camera_alt_rounded,
-                  label: 'Camera',
-                  color: const Color(0xFF00E5FF),
-                  onTap: () => _pick(ImageSource.camera),
-                )),
-                const SizedBox(width: 16),
-                Expanded(child: _BigBtn(
-                  icon: Icons.photo_library_rounded,
-                  label: 'Gallery',
-                  color: const Color(0xFFFFD600),
-                  onTap: () => _pick(ImageSource.gallery),
-                )),
-              ],
-            ),
+            Row(children: [
+              Expanded(child: _BigBtn(
+                icon: Icons.camera_alt_rounded,
+                label: 'Camera',
+                color: const Color(0xFF00E5FF),
+                onTap: () => _pick(ImageSource.camera),
+              )),
+              const SizedBox(width: 16),
+              Expanded(child: _BigBtn(
+                icon: Icons.photo_library_rounded,
+                label: 'Gallery',
+                color: const Color(0xFF00E5FF).withValues(alpha: 0.7),
+                onTap: () => _pick(ImageSource.gallery),
+              )),
+            ]),
           ],
         ),
       ),
     );
   }
 
+  // Step 2: manual select fallback
   Widget _buildSelectView() {
     if (_uiImage == null) return const SizedBox();
-    return Column(
-      children: [
-        Container(
-          color: const Color(0xFF161616),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          child: Row(
-            children: [
-              const Icon(Icons.touch_app, color: Color(0xFF00E5FF), size: 18),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Text('LCD digits pe finger rakh ke drag karo',
-                    style: TextStyle(color: Colors.white60, fontSize: 12)),
-              ),
-              if (_selScreen != null) ...[
-                GestureDetector(
-                  onTap: () => setState(() { _selA = _selB = null; }),
-                  child: const Text('Reset',
-                      style: TextStyle(color: Colors.red, fontSize: 12)),
-                ),
-                const SizedBox(width: 12),
-                GestureDetector(
-                  onTap: () => setState(() => _step = _Step.edit),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
-                    decoration: BoxDecoration(
-                        color: const Color(0xFF00E5FF),
-                        borderRadius: BorderRadius.circular(20)),
-                    child: const Text('Aage →',
-                        style: TextStyle(
-                            color: Colors.black,
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold)),
-                  ),
-                ),
-              ],
-            ],
-          ),
+    return Column(children: [
+      Container(
+        margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.orange.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(8),
+          border:
+              Border.all(color: Colors.orange.withValues(alpha: 0.4)),
         ),
-        Expanded(
-          child: LayoutBuilder(builder: (ctx, c) {
-            final iw = _uiImage!.width.toDouble();
-            final ih = _uiImage!.height.toDouble();
-            final scale = min(c.maxWidth / iw, c.maxHeight / ih);
-            final dw = iw * scale;
-            final dh = ih * scale;
-            _imgRect = Rect.fromLTWH(
-                (c.maxWidth - dw) / 2, (c.maxHeight - dh) / 2, dw, dh);
-
-            return GestureDetector(
-              onPanStart: (d) {
-                if (!_imgRect.contains(d.localPosition)) return;
-                setState(() {
-                  _selA = d.localPosition;
-                  _selB = d.localPosition;
-                  _dragging = true;
-                });
-              },
-              onPanUpdate: (d) {
-                if (!_dragging) return;
-                setState(() => _selB = Offset(
-                      d.localPosition.dx.clamp(_imgRect.left, _imgRect.right),
-                      d.localPosition.dy.clamp(_imgRect.top,  _imgRect.bottom),
-                    ));
-              },
-              onPanEnd: (_) => setState(() => _dragging = false),
-              child: CustomPaint(
-                size: Size(c.maxWidth, c.maxHeight),
-                painter: _SelectPainter(
-                    image: _uiImage!, imgRect: _imgRect, sel: _selScreen),
+        child: const Row(children: [
+          Icon(Icons.touch_app, color: Colors.orange, size: 15),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Auto-detect fail hua. LCD screen pe drag kar ke select karo.',
+              style: TextStyle(color: Colors.orange, fontSize: 12),
+            ),
+          ),
+        ]),
+      ),
+      Expanded(
+        child: GestureDetector(
+          onPanStart:  (d) => setState(() {
+            _selA = d.localPosition;
+            _selB = d.localPosition;
+          }),
+          onPanUpdate: (d) => setState(() => _selB = d.localPosition),
+          onPanEnd:    (_) {},
+          child: LayoutBuilder(builder: (_, cons) {
+            final w  = _uiImage!.width.toDouble();
+            final h  = _uiImage!.height.toDouble();
+            final sc = min(cons.maxWidth / w, cons.maxHeight / h);
+            final rw = w * sc; final rh = h * sc;
+            final ox = (cons.maxWidth  - rw) / 2;
+            final oy = (cons.maxHeight - rh) / 2;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              final nr = Rect.fromLTWH(ox, oy, rw, rh);
+              if (mounted && nr != _imgRect) setState(() => _imgRect = nr);
+            });
+            return CustomPaint(
+              painter: _SelectPainter(
+                image: _uiImage!,
+                imgRect: Rect.fromLTWH(ox, oy, rw, rh),
+                selection: _selScreen,
               ),
             );
           }),
         ),
-      ],
-    );
+      ),
+      Padding(
+        padding: const EdgeInsets.all(16),
+        child: SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed:
+                _selScreen != null ? _confirmManualSelect : null,
+            icon: const Icon(Icons.check),
+            label: const Text('Confirm'),
+            style: ElevatedButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 14)),
+          ),
+        ),
+      ),
+    ]);
   }
 
+  // Step 3: edit + preview
   Widget _buildEditView() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+      padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Nai Reading:',
-              style: TextStyle(color: Colors.white54, fontSize: 12)),
-          const SizedBox(height: 6),
+          // Auto-detect badge
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A1A),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                  color: _digitColor.withValues(alpha: 0.4)),
+            ),
+            child: Row(children: [
+              Container(
+                  width: 12, height: 12,
+                  decoration: BoxDecoration(
+                      color: _digitColor, shape: BoxShape.circle)),
+              const SizedBox(width: 8),
+              const Text('LCD auto-detect hua',
+                  style:
+                      TextStyle(color: Colors.white54, fontSize: 12)),
+              const Spacer(),
+              GestureDetector(
+                onTap: () => setState(() {
+                  _step = _Step.select;
+                  _selA = _selB = null;
+                  _preview = null;
+                }),
+                child: const Text('Manually adjust karo',
+                    style: TextStyle(
+                        color: Color(0xFF00E5FF), fontSize: 12)),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 12),
+
+          // Image: preview result OR original with LCD highlight
+          if (_preview != null)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.memory(_preview!, fit: BoxFit.contain),
+            )
+          else if (_imgBytes != null)
+            _OriginalWithHighlight(
+              imgBytes: _imgBytes!,
+              uiImage: _uiImage,
+              lcdRect: _lcdRect,
+              digitColor: _digitColor,
+            ),
+
+          const SizedBox(height: 12),
+
+          // Reading input
           TextField(
             controller: _ctrl,
             autofocus: true,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            onChanged: (_) => setState(() => _preview = null),
+            keyboardType: const TextInputType.numberWithOptions(
+                decimal: true),
             style: const TextStyle(
-                color: Color(0xFF00E5FF),
-                fontSize: 26,
-                letterSpacing: 6,
-                fontWeight: FontWeight.bold),
+                color: Colors.white,
+                fontSize: 22,
+                letterSpacing: 3,
+                fontWeight: FontWeight.w600),
             decoration: InputDecoration(
-              hintText: '12345.6',
-              hintStyle: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.15), letterSpacing: 2),
+              hintText: 'Nai reading type karo (e.g. 2804.5)',
+              hintStyle: const TextStyle(
+                  color: Colors.white24, fontSize: 14),
               filled: true,
-              fillColor: const Color(0xFF0D1A1A),
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              fillColor: const Color(0xFF1A1A1A),
               border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: Color(0xFF00E5FF))),
-              enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(
-                      color: const Color(0xFF00E5FF).withValues(alpha: 0.25))),
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide.none,
+              ),
               focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide:
-                      const BorderSide(color: Color(0xFF00E5FF), width: 2)),
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(
+                    color: Color(0xFF00E5FF), width: 1.5),
+              ),
             ),
+            onChanged: (_) => setState(() => _preview = null),
           ),
-          const SizedBox(height: 20),
-          const Text('LCD Style:',
-              style: TextStyle(color: Colors.white54, fontSize: 12)),
-          const SizedBox(height: 8),
-          SizedBox(
-            height: 46,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: MeterTemplate.presets.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
-              itemBuilder: (_, i) {
-                final t   = MeterTemplate.presets[i];
-                final sel = t.id == _tmpl.id;
-                return GestureDetector(
-                  onTap: () => setState(() { _tmpl = t; _preview = null; }),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 150),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: sel
-                          ? t.displayColor.withValues(alpha: 0.15)
-                          : const Color(0xFF1A1A1A),
-                      border: Border.all(
-                          color: sel
-                              ? t.displayColor
-                              : const Color(0xFF2A2A2A),
-                          width: sel ? 2 : 1),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Container(
-                          width: 10,
-                          height: 10,
-                          decoration: BoxDecoration(
-                              color: t.displayColor,
-                              shape: BoxShape.circle,
-                              boxShadow: sel
-                                  ? [BoxShadow(
-                                      color: t.displayColor.withValues(alpha: 0.6),
-                                      blurRadius: 8)]
-                                  : null)),
-                      const SizedBox(width: 7),
-                      Text(t.name,
-                          style: TextStyle(
-                              color: sel ? t.displayColor : Colors.white38,
-                              fontSize: 12,
-                              fontWeight: sel
-                                  ? FontWeight.w600
-                                  : FontWeight.normal)),
-                    ]),
-                  ),
-                );
-              },
-            ),
-          ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 12),
+
+          // Preview button
           OutlinedButton.icon(
             onPressed: _rendering ? null : _buildPreview,
             icon: _rendering
                 ? const SizedBox(
-                    width: 16,
-                    height: 16,
+                    width: 16, height: 16,
                     child: CircularProgressIndicator(
-                        strokeWidth: 2, color: Colors.cyan))
-                : const Icon(Icons.remove_red_eye_outlined,
+                        strokeWidth: 2,
+                        color: Colors.cyan))
+                : const Icon(Icons.visibility_outlined,
                     color: Colors.cyan, size: 18),
-            label: Text(_rendering ? 'Bana raha hai...' : 'Preview Dekho',
-                style: const TextStyle(color: Colors.cyan)),
-            style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: Colors.cyan),
-                padding: const EdgeInsets.symmetric(vertical: 12)),
-          ),
-          if (_preview != null) ...[
-            const SizedBox(height: 14),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: Image.memory(_preview!, fit: BoxFit.contain),
+            label: Text(
+              _rendering ? 'Rendering...' : 'Preview Dekho',
+              style: const TextStyle(color: Colors.cyan),
             ),
-          ],
-          const SizedBox(height: 20),
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: Color(0xFF00E5FF)),
+              padding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Save & Share
           ElevatedButton.icon(
             onPressed: _saving ? null : _saveShare,
             icon: _saving
                 ? const SizedBox(
-                    width: 18,
-                    height: 18,
+                    width: 18, height: 18,
                     child: CircularProgressIndicator(
                         strokeWidth: 2, color: Colors.black))
-                : const Icon(Icons.save_alt, color: Colors.black, size: 20),
-            label: Text(_saving ? 'Save ho raha hai...' : 'Save & Share',
-                style: const TextStyle(
-                    color: Colors.black,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 15)),
+                : const Icon(Icons.save_alt, size: 18),
+            label: Text(_saving ? 'Saving...' : 'Save & Share'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF00E5FF),
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
-            ),
+                padding: const EdgeInsets.symmetric(vertical: 14)),
           ),
         ],
       ),
@@ -593,49 +689,135 @@ class _OfflineEditScreenState extends State<OfflineEditScreen> {
   }
 }
 
+// ─── Original image with LCD highlight border ──────────────────────────
+
+class _OriginalWithHighlight extends StatelessWidget {
+  final Uint8List imgBytes;
+  final ui.Image? uiImage;
+  final Rect? lcdRect;
+  final Color digitColor;
+  const _OriginalWithHighlight({
+    required this.imgBytes,
+    required this.uiImage,
+    required this.lcdRect,
+    required this.digitColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: LayoutBuilder(builder: (_, cons) {
+        final img = uiImage;
+        return Stack(children: [
+          Image.memory(imgBytes,
+              fit: BoxFit.fitWidth,
+              width: cons.maxWidth),
+          if (img != null && lcdRect != null)
+            Positioned.fill(
+              child: CustomPaint(
+                painter: _LcdBorderPainter(
+                  imageWidth:  img.width.toDouble(),
+                  imageHeight: img.height.toDouble(),
+                  lcdRect:     lcdRect!,
+                  color:       digitColor,
+                ),
+              ),
+            ),
+        ]);
+      }),
+    );
+  }
+}
+
+class _LcdBorderPainter extends CustomPainter {
+  final double imageWidth, imageHeight;
+  final Rect lcdRect;
+  final Color color;
+  const _LcdBorderPainter({
+    required this.imageWidth, required this.imageHeight,
+    required this.lcdRect, required this.color,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // size.width == displayed image width (fitWidth)
+    final sx = size.width  / imageWidth;
+    final sy = size.width  / imageWidth; // fitWidth keeps uniform scale
+    final r  = Rect.fromLTRB(
+      lcdRect.left   * sx, lcdRect.top    * sy,
+      lcdRect.right  * sx, lcdRect.bottom * sy,
+    );
+    // Glow
+    canvas.drawRect(r, Paint()
+      ..color = color.withValues(alpha: 0.5)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
+    // Sharp border
+    canvas.drawRect(r, Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2);
+  }
+
+  @override
+  bool shouldRepaint(_LcdBorderPainter o) =>
+      o.lcdRect != lcdRect || o.color != color;
+}
+
+// ─── Manual select painter ─────────────────────────────────────────────
+
 class _SelectPainter extends CustomPainter {
   final ui.Image image;
   final Rect imgRect;
-  final Rect? sel;
+  final Rect? selection;
   const _SelectPainter(
-      {required this.image, required this.imgRect, this.sel});
+      {required this.image, required this.imgRect, this.selection});
 
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawImageRect(
-        image,
-        Rect.fromLTWH(
-            0, 0, image.width.toDouble(), image.height.toDouble()),
-        imgRect,
-        Paint());
-
-    if (sel == null) return;
-    final s   = sel!;
+      image,
+      Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+      imgRect,
+      Paint(),
+    );
+    if (selection == null) return;
+    final s = selection!;
     final dim = Paint()..color = Colors.black.withValues(alpha: 0.55);
-
-    canvas.drawRect(Rect.fromLTRB(imgRect.left, imgRect.top, imgRect.right, s.top), dim);
-    canvas.drawRect(Rect.fromLTRB(imgRect.left, s.bottom, imgRect.right, imgRect.bottom), dim);
-    canvas.drawRect(Rect.fromLTRB(imgRect.left, s.top, s.left, s.bottom), dim);
-    canvas.drawRect(Rect.fromLTRB(s.right, s.top, imgRect.right, s.bottom), dim);
-
+    canvas.drawRect(Rect.fromLTRB(0, 0, size.width, s.top), dim);
     canvas.drawRect(
-        s,
-        Paint()
-          ..color = const Color(0xFF00E5FF)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.5);
-
-    const hs = 8.0;
-    final hp = Paint()..color = const Color(0xFF00E5FF);
-    for (final pt in [s.topLeft, s.topRight, s.bottomLeft, s.bottomRight]) {
-      canvas.drawRect(Rect.fromCenter(center: pt, width: hs, height: hs), hp);
+        Rect.fromLTRB(0, s.bottom, size.width, size.height), dim);
+    canvas.drawRect(Rect.fromLTRB(0, s.top, s.left, s.bottom), dim);
+    canvas.drawRect(
+        Rect.fromLTRB(s.right, s.top, size.width, s.bottom), dim);
+    canvas.drawRect(s, Paint()
+      ..color = Colors.cyan
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2);
+    // Corner handles
+    const hs = 14.0;
+    final hp = Paint()
+      ..color = Colors.cyan
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke;
+    for (final c in [
+      s.topLeft, s.topRight, s.bottomLeft, s.bottomRight
+    ]) {
+      final dx = (c.dx == s.left) ? 1 : -1;
+      final dy = (c.dy == s.top)  ? 1 : -1;
+      canvas.drawLine(c, c + Offset(hs * dx, 0), hp);
+      canvas.drawLine(c, c + Offset(0, hs * dy), hp);
     }
   }
 
   @override
   bool shouldRepaint(_SelectPainter o) =>
-      o.sel != sel || o.imgRect != imgRect;
+      o.image != image || o.imgRect != imgRect || o.selection != selection;
 }
+
+// ─── Big pick button ───────────────────────────────────────────────────
 
 class _BigBtn extends StatelessWidget {
   final IconData icon;
@@ -653,18 +835,20 @@ class _BigBtn extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 22),
+        padding: const EdgeInsets.symmetric(vertical: 24),
         decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.08),
-          border: Border.all(color: color.withValues(alpha: 0.4), width: 1.5),
+          color: color.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: color.withValues(alpha: 0.5)),
         ),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, color: color, size: 38),
+        child: Column(children: [
+          Icon(icon, color: color, size: 32),
           const SizedBox(height: 8),
           Text(label,
               style: TextStyle(
-                  color: color, fontSize: 14, fontWeight: FontWeight.w600)),
+                  color: color,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600)),
         ]),
       ),
     );
