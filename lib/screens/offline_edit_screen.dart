@@ -1,644 +1,1013 @@
+import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
+import 'dart:math';
 import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
-import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart';
+
 import '../models/history_item.dart';
-import '../models/meter_template.dart';
 import '../services/storage_service.dart';
+
+// 7-segment: [top, top-right, bot-right, bottom, bot-left, top-left, middle]
+const Map<String, List<bool>> _segs = {
+  '0': [true,  true,  true,  true,  true,  true,  false],
+  '1': [false, true,  true,  false, false, false, false],
+  '2': [true,  true,  false, true,  true,  false, true ],
+  '3': [true,  true,  true,  true,  false, false, true ],
+  '4': [false, true,  true,  false, false, true,  true ],
+  '5': [true,  false, true,  true,  false, true,  true ],
+  '6': [true,  false, true,  true,  true,  true,  true ],
+  '7': [true,  true,  true,  false, false, false, false],
+  '8': [true,  true,  true,  true,  true,  true,  true ],
+  '9': [true,  true,  true,  true,  false, true,  true ],
+};
+
+enum _Step { pick, select, edit }
 
 class OfflineEditScreen extends StatefulWidget {
   const OfflineEditScreen({super.key});
-
   @override
   State<OfflineEditScreen> createState() => _OfflineEditScreenState();
 }
 
 class _OfflineEditScreenState extends State<OfflineEditScreen> {
-  File? _selectedImage;
-  final TextEditingController _readingController = TextEditingController();
-  final FocusNode _readingFocus = FocusNode();
-  final GlobalKey _repaintKey = GlobalKey();
-  Offset _overlayPosition = const Offset(60, 60);
-  double _fontSize = 34.0;
-  Color _textColor = const Color(0xFF4CAF50);
-  bool _hasBg = true;
-  bool _isSaving = false;
-  bool _showDragHint = true;
-  MeterTemplate _selectedTemplate = MeterTemplate.presets.first;
+  _Step _step = _Step.pick;
 
-  BannerAd? _bannerAd;
-  bool _isBannerAdLoaded = false;
+  Uint8List? _imgBytes;   // original file bytes for Image.memory display
+  ui.Image?  _uiImage;    // decoded ui.Image for canvas rendering
+  Uint8List? _rawPx;      // RGBA pixels for detection + color sampling
 
-  // TODO: Replace with your real AdMob Banner Ad Unit ID
-  static const String _bannerAdUnitId =
-      'ca-app-pub-3940256099942544/6300978111'; // Test ID
+  Rect?  _lcdRect;        // LCD area in image pixel coords
+  Color  _digitColor = const Color(0xFF00FF40);
+  Color  _bgColor    = Colors.black;
 
-  // TODO: Replace with your real AdMob Interstitial Ad Unit ID
-  static const String _interstitialAdUnitId =
-      'ca-app-pub-3940256099942544/1033173712'; // Test ID
+  // Manual select fallback
+  Offset? _selA, _selB;
+  Rect    _imgRect = Rect.zero;
+  // '' = drawing new box; 'tl'/'tr'/'bl'/'br' = corner; 'body' = moving whole box
+  String  _dragHandle = '';
 
-  InterstitialAd? _interstitialAd;
-  int _editCount = 0;
-
-  static const List<Color> _colorOptions = [
-    Color(0xFF4CAF50),
-    Color(0xFFFFBF00),
-    Colors.white,
-    Color(0xFF00E5FF),
-    Color(0xFFFF5252),
-    Color(0xFF448AFF),
-    Colors.black,
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadBannerAd();
-    _loadInterstitialAd();
-  }
-
-  void _applyTemplate(MeterTemplate t) {
-    setState(() {
-      _selectedTemplate = t;
-      _textColor = t.displayColor;
-      _fontSize = t.fontSize;
-      _hasBg = t.hasBg;
-    });
-  }
-
-  void _loadBannerAd() {
-    _bannerAd = BannerAd(
-      adUnitId: _bannerAdUnitId,
-      size: AdSize.banner,
-      request: const AdRequest(),
-      listener: BannerAdListener(
-        onAdLoaded: (ad) => setState(() => _isBannerAdLoaded = true),
-        onAdFailedToLoad: (ad, error) {
-          ad.dispose();
-          _bannerAd = null;
-        },
-      ),
-    )..load();
-  }
-
-  void _loadInterstitialAd() {
-    InterstitialAd.load(
-      adUnitId: _interstitialAdUnitId,
-      request: const AdRequest(),
-      adLoadCallback: InterstitialAdLoadCallback(
-        onAdLoaded: (ad) => _interstitialAd = ad,
-        onAdFailedToLoad: (_) => _interstitialAd = null,
-      ),
-    );
-  }
-
-  void _showInterstitialIfReady() {
-    _editCount++;
-    if (_editCount % 3 == 0 && _interstitialAd != null) {
-      _interstitialAd!.show();
-      _interstitialAd = null;
-      _loadInterstitialAd();
-    }
-  }
-
-  Future<void> _pickImage(ImageSource source) async {
-    _readingFocus.unfocus();
-    try {
-      final XFile? file = await ImagePicker()
-          .pickImage(source: source, imageQuality: 100);
-      if (file != null && mounted) {
-        setState(() {
-          _selectedImage = File(file.path);
-          _overlayPosition = const Offset(60, 60);
-          _showDragHint = true;
-        });
-      }
-    } catch (e) {
-      _showSnack('Could not pick image: $e');
-    }
-  }
-
-  Future<void> _saveAndShare() async {
-    if (_selectedImage == null || _readingController.text.trim().isEmpty) {
-      _showSnack('Please select a photo and enter a meter reading');
-      return;
-    }
-    _readingFocus.unfocus();
-    await Future.delayed(const Duration(milliseconds: 100));
-
-    setState(() => _isSaving = true);
-    try {
-      final RenderRepaintBoundary boundary = _repaintKey.currentContext!
-          .findRenderObject() as RenderRepaintBoundary;
-      final ui.Image image = await boundary.toImage(pixelRatio: 3.0);
-      final ByteData? byteData =
-          await image.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) throw Exception('Failed to capture image');
-
-      final Uint8List pngBytes = byteData.buffer.asUint8List();
-      final dir = await getTemporaryDirectory();
-      final String stamp = DateTime.now().millisecondsSinceEpoch.toString();
-      final String filePath = '\${dir.path}/meter_\$stamp.png';
-      await File(filePath).writeAsBytes(pngBytes);
-
-      await StorageService.instance.addHistory(HistoryItem(
-        filePath: filePath,
-        reading: _readingController.text.trim(),
-        timestamp: DateTime.now(),
-      ));
-
-      await Share.shareXFiles(
-        [XFile(filePath)],
-        text: 'Meter Reading: \${_readingController.text.trim()} kWh\n'
-            'Edited with MeterSet Pro',
-      );
-
-      _showInterstitialIfReady();
-    } catch (e) {
-      _showSnack('Error saving: \$e');
-    } finally {
-      if (mounted) setState(() => _isSaving = false);
-    }
-  }
-
-  void _showSnack(String msg) {
-    if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(msg)));
-    }
-  }
+  final _ctrl    = TextEditingController();
+  Uint8List? _preview;
+  bool _detecting = false;
+  bool _rendering = false;
+  bool _saving    = false;
 
   @override
   void dispose() {
-    _readingController.dispose();
-    _readingFocus.dispose();
-    _bannerAd?.dispose();
-    _interstitialAd?.dispose();
+    _ctrl.dispose();
+    _uiImage?.dispose();
     super.dispose();
   }
+
+  // ─── Pick & auto-detect ────────────────────────────────────────────
+
+  Future<void> _pick(ImageSource src) async {
+    final x = await ImagePicker().pickImage(source: src, imageQuality: 95);
+    if (x == null || !mounted) return;
+
+    final bytes = await File(x.path).readAsBytes();
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    if (!mounted) { frame.image.dispose(); return; }
+
+    _uiImage?.dispose();
+    final img = frame.image;
+    final bd  = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+    if (!mounted) { img.dispose(); return; }
+
+    setState(() {
+      _imgBytes  = bytes;
+      _uiImage   = img;
+      _rawPx     = bd?.buffer.asUint8List();
+      _lcdRect   = null;
+      _selA = _selB = null;
+      _preview   = null;
+      _detecting = true;
+      _step      = _Step.pick;
+    });
+
+    // Yield so spinner paints before detection blocks the thread
+    await Future.delayed(Duration.zero);
+    if (!mounted) return;
+
+    final det = _rawPx != null ? _detect(img, _rawPx!) : null;
+
+    if (!mounted) return;
+    if (det != null) {
+      setState(() {
+        _lcdRect    = det.$1;
+        _digitColor = det.$2;
+        _bgColor    = det.$3;
+        _detecting  = false;
+        _step       = _Step.edit;
+      });
+    } else {
+      setState(() { _detecting = false; _step = _Step.select; });
+    }
+  }
+
+  // ─── Detection: returns (lcdRect, digitColor, bgColor) or null ─────
+  //
+  // Strategy: row/column density scan.
+  // 1. Count "gray LCD" pixels per row in the upper 62% of the image.
+  //    Gray LCD: lum 120-222, sat < 0.22 (excludes white plastic >222,
+  //    dark bezel <120, and coloured LEDs with sat>0.22).
+  // 2. Find the LONGEST consecutive run of rows where >22% of pixels are
+  //    gray — this is the horizontal band that contains the LCD panel.
+  // 3. Within that band, find columns where >20% of rows are gray — this
+  //    gives the left/right edges of the LCD.
+  // This is more robust than cell-scoring because it finds the CONTIGUOUS
+  // LCD band rather than scattered high-score cells that can be confused by
+  // handwriting, labels, or metal components below the LCD.
+
+  (Rect, Color, Color)? _detect(ui.Image img, Uint8List px) {
+    final w = img.width;
+    final h = img.height;
+    final hScan = (h * 0.62).toInt();
+
+    // ── Step 1: row gray-pixel count ──────────────────────────────────
+    final rowGray = List.filled(hScan, 0);
+    for (int y = 0; y < hScan; y++) {
+      for (int x = 0; x < w; x += 2) {
+        final i   = (y * w + x) * 4;
+        final r   = px[i]; final g = px[i + 1]; final b = px[i + 2];
+        final mx  = max(r, max(g, b));
+        final mn  = min(r, min(g, b));
+        final lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        final sat = mx > 0 ? (mx - mn) / mx : 0.0;
+        if (lum > 120 && lum < 222 && sat < 0.22) rowGray[y]++;
+      }
+    }
+
+    // Sampled at x-step 2 → max possible per row is w ~/ 2
+    final maxCols = w ~/ 2;
+
+    // ── Step 2: longest consecutive run of "gray" rows (>22%) ─────────
+    int bestStart = -1, bestLen = 0;
+    int curStart  = -1, curLen  = 0;
+    for (int y = 0; y < hScan; y++) {
+      if (rowGray[y] / maxCols > 0.22) {
+        if (curStart < 0) curStart = y;
+        curLen++;
+        if (curLen > bestLen) { bestLen = curLen; bestStart = curStart; }
+      } else {
+        curStart = -1; curLen = 0;
+      }
+    }
+    if (bestStart < 0 || bestLen < 10) return null;
+
+    // Expand row band ±15% vertically for digit ascenders/descenders
+    final padV   = (bestLen * 0.15).round().clamp(3, 60);
+    final rowTop = (bestStart - padV).clamp(0, hScan);
+    final rowBot = (bestStart + bestLen + padV).clamp(0, hScan);
+
+    // ── Step 3: column gray-pixel count within the detected band ───────
+    final colGray = List.filled(w, 0);
+    for (int y = rowTop; y < rowBot; y += 2) {
+      for (int x = 0; x < w; x++) {
+        final i   = (y * w + x) * 4;
+        final r   = px[i]; final g = px[i + 1]; final b = px[i + 2];
+        final mx  = max(r, max(g, b));
+        final mn  = min(r, min(g, b));
+        final lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        final sat = mx > 0 ? (mx - mn) / mx : 0.0;
+        if (lum > 120 && lum < 222 && sat < 0.22) colGray[x]++;
+      }
+    }
+
+    // Sampled at y-step 2 within the band
+    final colH = (rowBot - rowTop) ~/ 2;
+    if (colH == 0) return null;
+
+    // Left/right boundary: first/last column with >20% gray rows
+    int lcdL = -1, lcdR = -1;
+    for (int x = 0; x < w; x++) {
+      if (colGray[x] / colH > 0.20) {
+        if (lcdL < 0) lcdL = x;
+        lcdR = x;
+      }
+    }
+    if (lcdL < 0) return null;
+
+    // Expand left/right by 2%
+    final padH = ((lcdR - lcdL) * 0.02).round().clamp(3, 40);
+    final rect = Rect.fromLTRB(
+      (lcdL - padH).toDouble().clamp(0.0, w.toDouble()),
+      rowTop.toDouble(),
+      (lcdR + padH).toDouble().clamp(0.0, w.toDouble()),
+      rowBot.toDouble(),
+    );
+
+    // ── Geometry validation ────────────────────────────────────────────
+    final ar = rect.width / rect.height;
+    if (ar < 1.5 || ar > 16) return null;
+    if (rect.width < w * 0.08) return null;
+    if (rect.width > w * 0.95 && rect.height > hScan * 0.70) return null;
+
+    final colors = _sampleColors(px, w, h, rect);
+    return (rect, colors.$2, colors.$1);
+  }
+
+  // Sample LCD region using luminance percentiles:
+  //   top-40% brightest pixels  → LCD background color
+  //   bottom-20% darkest pixels → actual segment color (measured from photo)
+  // Samples from inner 75%×70% of the rect to avoid including the bezel frame.
+  (Color, Color) _sampleColors(Uint8List px, int w, int h, Rect rect) {
+    // Inner region — skip the outer frame/bezel
+    final ix0 = (rect.left   + rect.width  * 0.12).round().clamp(0, w - 1);
+    final iy0 = (rect.top    + rect.height * 0.15).round().clamp(0, h - 1);
+    final ix1 = (rect.right  - rect.width  * 0.12).round().clamp(0, w);
+    final iy1 = (rect.bottom - rect.height * 0.15).round().clamp(0, h);
+
+    // Collect (r,g,b,lum) for every sampled pixel
+    final rs = <int>[], gs = <int>[], bs = <int>[], lums = <double>[];
+    for (int y = iy0; y < iy1; y += 2) {
+      for (int x = ix0; x < ix1; x += 2) {
+        final i  = (y * w + x) * 4;
+        final r  = px[i]; final g = px[i + 1]; final b = px[i + 2];
+        final lm = 0.299 * r + 0.587 * g + 0.114 * b;
+        rs.add(r); gs.add(g); bs.add(b); lums.add(lm);
+      }
+    }
+    if (rs.isEmpty) return (const Color(0xFFBBBBBB), const Color(0xFF444444));
+
+    // Sort indices by luminance
+    final idx = List.generate(rs.length, (i) => i)
+      ..sort((a, b) => lums[a].compareTo(lums[b]));
+
+    // Histogram mode for background: find the most common luminance bucket
+    // among the brighter half of pixels. This gives the exact LCD panel color
+    // rather than an average that drifts when dark digit marks are present.
+    const bucketSz  = 8;
+    const numBucket = 32; // 256 / bucketSz
+    final bCnt = List.filled(numBucket, 0);
+    final bR   = List.filled(numBucket, 0);
+    final bG   = List.filled(numBucket, 0);
+    final bB   = List.filled(numBucket, 0);
+    final medLum = lums[idx[idx.length ~/ 2]];
+    for (int k = 0; k < rs.length; k++) {
+      if (lums[k] >= medLum) {
+        final b = (lums[k] / bucketSz).floor().clamp(0, numBucket - 1);
+        bCnt[b]++; bR[b] += rs[k]; bG[b] += gs[k]; bB[b] += bs[k];
+      }
+    }
+    int best = 0;
+    for (int i = 1; i < numBucket; i++) {
+      if (bCnt[i] > bCnt[best]) best = i;
+    }
+    final bgCnt = bCnt[best].clamp(1, 999999);
+    final bgR = bR[best] ~/ bgCnt;
+    final bgG = bG[best] ~/ bgCnt;
+    final bgB = bB[best] ~/ bgCnt;
+    final bgLum = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB;
+
+    // Bottom 20% darkest → digit segment colour (actual dark pixels in photo)
+    final segEnd = (idx.length * 0.20).toInt().clamp(1, idx.length);
+    int tr = 0, tg = 0, tb = 0;
+    for (int k = 0; k < segEnd; k++) {
+      tr += rs[idx[k]]; tg += gs[idx[k]]; tb += bs[idx[k]];
+    }
+    final segR = tr ~/ segEnd; final segG = tg ~/ segEnd; final segB = tb ~/ segEnd;
+    final segLum = 0.299 * segR + 0.587 * segG + 0.114 * segB;
+
+    final bg = Color.fromARGB(255, bgR, bgG, bgB);
+    // Use measured segment colour if it is clearly darker than background;
+    // otherwise fall back to 38 % of background (reflective LCD typical ratio)
+    final Color dig;
+    if (bgLum > 0 && segLum / bgLum < 0.68) {
+      dig = Color.fromARGB(255, segR, segG, segB);
+    } else {
+      dig = Color.fromARGB(255,
+          (bgR * 0.38).round(), (bgG * 0.38).round(), (bgB * 0.38).round());
+    }
+    return (bg, dig); // (bgColor, digitColor)
+  }
+
+  // ─── Manual select (fallback) ──────────────────────────────────────
+
+  Rect? get _selScreen => (_selA != null && _selB != null)
+      ? Rect.fromPoints(_selA!, _selB!)
+      : null;
+
+  Rect? get _selImage {
+    final s = _selScreen;
+    if (s == null || _uiImage == null || _imgRect.isEmpty) return null;
+    final sw = _uiImage!.width  / _imgRect.width;
+    final sh = _uiImage!.height / _imgRect.height;
+    return Rect.fromLTRB(
+      ((s.left   - _imgRect.left) * sw).clamp(0.0, _uiImage!.width.toDouble()),
+      ((s.top    - _imgRect.top)  * sh).clamp(0.0, _uiImage!.height.toDouble()),
+      ((s.right  - _imgRect.left) * sw).clamp(0.0, _uiImage!.width.toDouble()),
+      ((s.bottom - _imgRect.top)  * sh).clamp(0.0, _uiImage!.height.toDouble()),
+    );
+  }
+
+  void _confirmManualSelect() {
+    final r = _selImage;
+    if (r == null || _rawPx == null) return;
+    final c = _sampleColors(_rawPx!, _uiImage!.width, _uiImage!.height, r);
+    setState(() {
+      _lcdRect    = r;
+      _digitColor = c.$2; // darkened digit color
+      _bgColor    = c.$1; // average bg color
+      _step       = _Step.edit;
+    });
+  }
+
+  // ─── Rendering ─────────────────────────────────────────────────────
+
+  Future<Uint8List> _render(String reading) async {
+    final lcd = _lcdRect!;
+    final iw  = _uiImage!.width;
+    final ih  = _uiImage!.height;
+
+    // ── Pixel-level digit erasure ─────────────────────────────────────
+    // Instead of a flat colour fill (which looks like a painted box),
+    // scan the LCD rect pixel-by-pixel: dark pixels (original digit
+    // marks) are replaced with bgColor; bright background pixels are
+    // left untouched so the LCD glass texture is preserved.
+    // Threshold: any pixel whose luminance < 68 % of bgLum is a mark.
+    final outPx = Uint8List.fromList(_rawPx!);
+    final bgR   = (_bgColor.r * 255).round();
+    final bgG   = (_bgColor.g * 255).round();
+    final bgB   = (_bgColor.b * 255).round();
+    final bgLum = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB;
+    final markThr = bgLum * 0.68;
+
+    final lx0 = lcd.left.round().clamp(0, iw);
+    final ly0 = lcd.top.round().clamp(0, ih);
+    final lx1 = lcd.right.round().clamp(0, iw);
+    final ly1 = lcd.bottom.round().clamp(0, ih);
+
+    for (int y = ly0; y < ly1; y++) {
+      for (int x = lx0; x < lx1; x++) {
+        final k   = (y * iw + x) * 4;
+        final lum = 0.299 * outPx[k] + 0.587 * outPx[k + 1] + 0.114 * outPx[k + 2];
+        if (lum < markThr) {
+          outPx[k]     = bgR;
+          outPx[k + 1] = bgG;
+          outPx[k + 2] = bgB;
+          // alpha byte (k+3) stays 255
+        }
+      }
+    }
+
+    // Decode the modified pixel buffer back to a ui.Image
+    final comp = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+      outPx, iw, ih, ui.PixelFormat.rgba8888,
+      (img) => comp.complete(img),
+      rowBytes: iw * 4,
+    );
+    final modImg = await comp.future;
+
+    // Draw the texture-preserved image then overlay new digit segments
+    final rec = ui.PictureRecorder();
+    final can = Canvas(rec, Rect.fromLTWH(0, 0, iw.toDouble(), ih.toDouble()));
+    can.drawImage(modImg, Offset.zero, Paint());
+    modImg.dispose();
+    _drawString(can, reading, lcd, _digitColor, _bgColor);
+
+    final pic = rec.endRecording();
+    final out = await pic.toImage(iw, ih);
+    pic.dispose();
+    final bd  = await out.toByteData(format: ui.ImageByteFormat.png);
+    out.dispose();
+    return bd!.buffer.asUint8List();
+  }
+
+  void _drawString(Canvas can, String text, Rect rect, Color on, Color off) {
+    if (text.isEmpty) return;
+    double units = 0;
+    for (final c in text.characters) units += c == '.' ? 0.35 : 1.0;
+    if (units == 0) return;
+    final padH = rect.width  * 0.05;
+    final padV = rect.height * 0.10;
+    final avW  = rect.width  - padH * 2;
+    final avH  = rect.height - padV * 2;
+    final gapW = avW * 0.04;
+    final cW   = (avW - gapW * (text.length - 1)) / units;
+    final cH   = avH;
+    double cx  = rect.left + padH;
+    final cy   = rect.top  + padV;
+    for (final c in text.characters) {
+      if (c == '.') {
+        final dw = cW * 0.35;
+        final ds = (cH * 0.14).clamp(3.0, 14.0);
+        can.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromLTWH(cx + dw * 0.2, cy + cH - ds * 2, ds, ds),
+              const Radius.circular(3)),
+          Paint()..color = on);
+        cx += dw + gapW;
+        continue;
+      }
+      final s = _segs[c];
+      if (s != null) _drawDigit(can, s, Offset(cx, cy), Size(cW, cH), on, off);
+      cx += cW + gapW;
+    }
+  }
+
+  void _drawDigit(Canvas can, List<bool> s, Offset o, Size sz,
+      Color on, Color off) {
+    final t   = (sz.height * 0.11).clamp(2.5, 14.0);
+    final w   = sz.width;
+    final h   = sz.height;
+    final mid = h * 0.5;
+    final inn = t * 0.55;
+
+    void hSeg(bool a, double x, double y, double len) =>
+        can.drawPath(
+            Path()
+              ..moveTo(x + inn,       y)
+              ..lineTo(x + len - inn, y)
+              ..lineTo(x + len,       y + t * 0.5)
+              ..lineTo(x + len - inn, y + t)
+              ..lineTo(x + inn,       y + t)
+              ..lineTo(x,             y + t * 0.5)
+              ..close(),
+            Paint()..color = a ? on : off);
+
+    void vSeg(bool a, double x, double y, double len) =>
+        can.drawPath(
+            Path()
+              ..moveTo(x,           y + inn)
+              ..lineTo(x + t * 0.5, y)
+              ..lineTo(x + t,       y + inn)
+              ..lineTo(x + t,       y + len - inn)
+              ..lineTo(x + t * 0.5, y + len)
+              ..lineTo(x,           y + len - inn)
+              ..close(),
+            Paint()..color = a ? on : off);
+
+    hSeg(s[0], o.dx,         o.dy,                 w);
+    vSeg(s[1], o.dx + w - t, o.dy,                 mid);
+    vSeg(s[2], o.dx + w - t, o.dy + mid,           mid);
+    hSeg(s[3], o.dx,         o.dy + h - t,          w);
+    vSeg(s[4], o.dx,         o.dy + mid,           mid);
+    vSeg(s[5], o.dx,         o.dy,                 mid);
+    hSeg(s[6], o.dx,         o.dy + mid - t * 0.5, w);
+  }
+
+  Future<void> _buildPreview() async {
+    final r = _ctrl.text.trim();
+    if (r.isEmpty || _lcdRect == null) return;
+    setState(() { _rendering = true; _preview = null; });
+    try {
+      final b = await _render(r);
+      if (mounted) setState(() => _preview = b);
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Error: $e')));
+    } finally {
+      if (mounted) setState(() => _rendering = false);
+    }
+  }
+
+  Future<void> _saveShare() async {
+    final r = _ctrl.text.trim();
+    if (r.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Reading type karein')));
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      final bytes = await _render(r);
+      final dir   = await getApplicationDocumentsDirectory();
+      final ts    = DateTime.now();
+      final path  = '${dir.path}/meter_${ts.millisecondsSinceEpoch}.png';
+      await File(path).writeAsBytes(bytes);
+      await StorageService.instance
+          .addHistory(HistoryItem(filePath: path, reading: r, timestamp: ts));
+      if (!mounted) return;
+      await Share.shareXFiles([XFile(path)], text: 'Meter reading: $r');
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Error: $e')));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  // ─── UI ────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      resizeToAvoidBottomInset: false,
       backgroundColor: const Color(0xFF0A0A0A),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF141414),
-        title: Text(
-          'Offline Edit',
-          style: GoogleFonts.orbitron(color: const Color(0xFF00E5FF)),
-        ),
-        iconTheme: const IconThemeData(color: Color(0xFF00E5FF)),
+        backgroundColor: const Color(0xFF111111),
         elevation: 0,
+        leading: _step != _Step.pick
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back_ios_new,
+                    color: Colors.white70, size: 20),
+                onPressed: () => setState(() {
+                  if (_step == _Step.edit) {
+                    _step = _Step.select;
+                    _preview = null;
+                  } else {
+                    _step = _Step.pick;
+                    _uiImage?.dispose();
+                    _uiImage = null;
+                  }
+                }),
+              )
+            : null,
+        title: Text(
+          _detecting
+              ? 'LCD Detect Ho Raha Hai...'
+              : ['Meter Photo Lo', 'LCD Area Select Karo',
+                  'Reading Likhо'][_step.index],
+          style: const TextStyle(
+              color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+        ),
         actions: [
-          if (_selectedImage != null)
-            IconButton(
-              icon: const Icon(Icons.refresh, color: Colors.white54),
-              tooltip: 'New photo',
-              onPressed: () => setState(() {
-                _selectedImage = null;
-                _readingController.clear();
-              }),
-            ),
+          if (_step == _Step.edit)
+            _saving
+                ? const Padding(
+                    padding: EdgeInsets.all(14),
+                    child: SizedBox(
+                        width: 20, height: 20,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.cyan)))
+                : TextButton.icon(
+                    onPressed: _saveShare,
+                    icon: const Icon(Icons.save_alt,
+                        color: Colors.cyan, size: 18),
+                    label: const Text('Save',
+                        style: TextStyle(color: Colors.cyan, fontSize: 14)),
+                  ),
         ],
       ),
-      body: _selectedImage == null ? _buildPickerView() : _buildEditorView(),
+      body: switch (_step) {
+        _Step.pick   => _buildPickView(),
+        _Step.select => _buildSelectView(),
+        _Step.edit   => _buildEditView(),
+      },
     );
   }
 
-  Widget _buildTemplateSelector() {
-    return Container(
-      color: const Color(0xFF0F0F0F),
-      padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.style, color: Colors.white38, size: 13),
-              const SizedBox(width: 5),
-              Text(
-                'Display Template',
-                style: GoogleFonts.poppins(
-                    color: Colors.white38, fontSize: 11),
+  // Step 1: pick (or spinner while detecting)
+  Widget _buildPickView() {
+    if (_detecting) {
+      return Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const CircularProgressIndicator(color: Color(0xFF00E5FF)),
+          const SizedBox(height: 20),
+          Text('LCD area dhundh raha hai...',
+              style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.5), fontSize: 14)),
+        ]),
+      );
+    }
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(28),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                    color: const Color(0xFF00E5FF).withValues(alpha: 0.3),
+                    width: 2),
+                color: const Color(0xFF00E5FF).withValues(alpha: 0.05),
               ),
-            ],
-          ),
-          const SizedBox(height: 7),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: MeterTemplate.presets.map((t) {
-                final isSelected = _selectedTemplate.id == t.id;
-                return GestureDetector(
-                  onTap: () => _applyTemplate(t),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    margin: const EdgeInsets.only(right: 8),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: isSelected
-                          ? t.displayColor.withOpacity(0.18)
-                          : const Color(0xFF1A1A1A),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: isSelected ? t.displayColor : Colors.white12,
-                        width: isSelected ? 1.5 : 1,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 9,
-                          height: 9,
-                          decoration: BoxDecoration(
-                            color: t.displayColor,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          t.name,
-                          style: GoogleFonts.poppins(
-                            fontSize: 12,
-                            color: isSelected
-                                ? t.displayColor
-                                : Colors.white54,
-                            fontWeight: isSelected
-                                ? FontWeight.w600
-                                : FontWeight.normal,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }).toList(),
+              child: const Icon(Icons.electric_meter,
+                  size: 72, color: Color(0xFF00E5FF)),
             ),
-          ),
-        ],
+            const SizedBox(height: 28),
+            const Text(
+              'Photo lo — LCD area aur rang automatically detect hoga',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white60, fontSize: 15),
+            ),
+            const SizedBox(height: 40),
+            Row(children: [
+              Expanded(child: _BigBtn(
+                icon: Icons.camera_alt_rounded,
+                label: 'Camera',
+                color: const Color(0xFF00E5FF),
+                onTap: () => _pick(ImageSource.camera),
+              )),
+              const SizedBox(width: 16),
+              Expanded(child: _BigBtn(
+                icon: Icons.photo_library_rounded,
+                label: 'Gallery',
+                color: const Color(0xFF00E5FF).withValues(alpha: 0.7),
+                onTap: () => _pick(ImageSource.gallery),
+              )),
+            ]),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildPickerView() {
-    return Column(
-      children: [
-        _buildTemplateSelector(),
-        Expanded(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF00E5FF).withOpacity(0.08),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.photo_camera,
-                        size: 64, color: Color(0xFF00E5FF)),
-                  ),
-                  const SizedBox(height: 24),
-                  Text(
-                    'Select Meter Photo',
-                    style: GoogleFonts.orbitron(
-                        fontSize: 20, color: const Color(0xFF00E5FF)),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Choose the meter photo you want to edit the reading on',
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.poppins(
-                        color: Colors.white38, fontSize: 13),
-                  ),
-                  const SizedBox(height: 40),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: () => _pickImage(ImageSource.camera),
-                          icon: const Icon(Icons.camera_alt),
-                          label: Text('Camera',
-                              style: GoogleFonts.poppins(fontSize: 15)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF00E5FF),
-                            foregroundColor: Colors.black,
-                            padding:
-                                const EdgeInsets.symmetric(vertical: 14),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: () => _pickImage(ImageSource.gallery),
-                          icon: const Icon(Icons.photo_library),
-                          label: Text('Gallery',
-                              style: GoogleFonts.poppins(fontSize: 15)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF1A1A1A),
-                            foregroundColor: Colors.white,
-                            side: const BorderSide(
-                                color: Color(0xFF00E5FF)),
-                            padding:
-                                const EdgeInsets.symmetric(vertical: 14),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+  // Step 2: manual select fallback
+  Widget _buildSelectView() {
+    if (_uiImage == null) return const SizedBox();
+    return Column(children: [
+      Container(
+        margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.orange.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(8),
+          border:
+              Border.all(color: Colors.orange.withValues(alpha: 0.4)),
+        ),
+        child: const Row(children: [
+          Icon(Icons.touch_app, color: Colors.orange, size: 15),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Auto-detect fail hua. LCD screen pe drag kar ke select karo.',
+              style: TextStyle(color: Colors.orange, fontSize: 12),
             ),
           ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildEditorView() {
-    return Column(
-      children: [
-        _buildTemplateSelector(),
-        _buildReadingInputBar(),
-        Expanded(child: _buildImageCanvas()),
-        _buildControlsPanel(),
-        if (_isBannerAdLoaded && _bannerAd != null)
-          SizedBox(
-            width: _bannerAd!.size.width.toDouble(),
-            height: _bannerAd!.size.height.toDouble(),
-            child: AdWidget(ad: _bannerAd!),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildReadingInputBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      color: const Color(0xFF141414),
-      child: TextField(
-        controller: _readingController,
-        focusNode: _readingFocus,
-        keyboardType:
-            const TextInputType.numberWithOptions(decimal: true),
-        style: GoogleFonts.orbitron(
-          color: _textColor,
-          fontSize: 22,
-          letterSpacing: 3,
-        ),
-        decoration: InputDecoration(
-          hintText: '00000.00',
-          hintStyle: GoogleFonts.orbitron(
-            color: Colors.white12,
-            fontSize: 22,
-            letterSpacing: 3,
-          ),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(color: _textColor),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(color: _textColor.withOpacity(0.4)),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(color: _textColor, width: 2),
-          ),
-          filled: true,
-          fillColor: Colors.black,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          suffixText: 'kWh',
-          suffixStyle:
-              GoogleFonts.orbitron(color: Colors.white30, fontSize: 11),
-          prefixIcon: Icon(Icons.speed, color: _textColor, size: 20),
-        ),
-        onChanged: (_) => setState(() {}),
-        onTap: () => setState(() => _showDragHint = false),
+        ]),
       ),
-    );
-  }
-
-  Widget _buildImageCanvas() {
-    return GestureDetector(
-      onTap: () => _readingFocus.unfocus(),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          return RepaintBoundary(
-            key: _repaintKey,
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: Image.file(
-                    _selectedImage!,
-                    fit: BoxFit.contain,
-                  ),
-                ),
-                if (_readingController.text.isNotEmpty)
-                  Positioned(
-                    left: _overlayPosition.dx,
-                    top: _overlayPosition.dy,
-                    child: GestureDetector(
-                      onPanUpdate: (details) {
-                        setState(() {
-                          _showDragHint = false;
-                          _overlayPosition = Offset(
-                            (_overlayPosition.dx + details.delta.dx)
-                                .clamp(0.0, constraints.maxWidth - 40),
-                            (_overlayPosition.dy + details.delta.dy)
-                                .clamp(0.0, constraints.maxHeight - 30),
-                          );
-                        });
-                      },
-                      child: Container(
-                        padding: _hasBg
-                            ? const EdgeInsets.symmetric(
-                                horizontal: 6, vertical: 2)
-                            : EdgeInsets.zero,
-                        decoration: _hasBg
-                            ? BoxDecoration(
-                                color: Colors.black.withOpacity(0.55),
-                                borderRadius: BorderRadius.circular(4),
-                              )
-                            : null,
-                        child: Text(
-                          _readingController.text,
-                          style: GoogleFonts.orbitron(
-                            fontSize: _fontSize,
-                            color: _textColor,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: _selectedTemplate.letterSpacing,
-                            shadows: [
-                              Shadow(
-                                color: _textColor.withOpacity(0.7),
-                                blurRadius: 10,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                if (_showDragHint && _readingController.text.isNotEmpty)
-                  Positioned(
-                    bottom: 8,
-                    left: 0,
-                    right: 0,
-                    child: Center(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.65),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.open_with,
-                                color: Colors.white60, size: 14),
-                            const SizedBox(width: 6),
-                            Text(
-                              'Drag number to position',
-                              style: GoogleFonts.poppins(
-                                  color: Colors.white60, fontSize: 11),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildControlsPanel() {
-    return Container(
-      color: const Color(0xFF141414),
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.text_fields, color: Colors.white38, size: 16),
-              const SizedBox(width: 6),
-              Text('Size',
-                  style: GoogleFonts.poppins(
-                      color: Colors.white38, fontSize: 11)),
-              Expanded(
-                child: SliderTheme(
-                  data: SliderThemeData(
-                    activeTrackColor: _textColor,
-                    inactiveTrackColor: Colors.white24,
-                    thumbColor: _textColor,
-                    overlayColor: _textColor.withOpacity(0.2),
-                    trackHeight: 2,
-                    thumbShape:
-                        const RoundSliderThumbShape(enabledThumbRadius: 8),
-                  ),
-                  child: Slider(
-                    value: _fontSize,
-                    min: 14,
-                    max: 80,
-                    onChanged: (v) => setState(() => _fontSize = v),
-                  ),
+      Expanded(
+        child: GestureDetector(
+          onPanStart: (d) {
+            final pos = d.localPosition;
+            final s   = _selScreen;
+            if (s != null) {
+              // Normalise A/B so A=topLeft, B=bottomRight before handle ops
+              const hR = 26.0; // handle hit radius
+              if ((pos - s.topLeft).distance     < hR) { setState(() { _selA = s.topLeft;     _selB = s.bottomRight; _dragHandle = 'tl'; }); return; }
+              if ((pos - s.topRight).distance    < hR) { setState(() { _selA = s.topLeft;     _selB = s.bottomRight; _dragHandle = 'tr'; }); return; }
+              if ((pos - s.bottomLeft).distance  < hR) { setState(() { _selA = s.topLeft;     _selB = s.bottomRight; _dragHandle = 'bl'; }); return; }
+              if ((pos - s.bottomRight).distance < hR) { setState(() { _selA = s.topLeft;     _selB = s.bottomRight; _dragHandle = 'br'; }); return; }
+              if (s.contains(pos)) { setState(() { _selA = s.topLeft; _selB = s.bottomRight; _dragHandle = 'body'; }); return; }
+            }
+            // Draw a fresh box
+            setState(() { _selA = pos; _selB = pos; _dragHandle = ''; });
+          },
+          onPanUpdate: (d) {
+            final pos = d.localPosition;
+            setState(() {
+              switch (_dragHandle) {
+                case 'tl':   _selA = pos; break;
+                case 'tr':   _selA = Offset(_selA!.dx, pos.dy); _selB = Offset(pos.dx, _selB!.dy); break;
+                case 'bl':   _selA = Offset(pos.dx, _selA!.dy); _selB = Offset(_selB!.dx, pos.dy); break;
+                case 'br':   _selB = pos; break;
+                case 'body': _selA = _selA! + d.delta; _selB = _selB! + d.delta; break;
+                default:     _selB = pos; break; // drawing new box
+              }
+            });
+          },
+          onPanEnd: (_) => setState(() => _dragHandle = ''),
+          child: LayoutBuilder(builder: (_, cons) {
+            final imgW = _uiImage!.width.toDouble();
+            final imgH = _uiImage!.height.toDouble();
+            final sc   = min(cons.maxWidth / imgW, cons.maxHeight / imgH);
+            final rw   = imgW * sc; final rh = imgH * sc;
+            final ox   = (cons.maxWidth  - rw) / 2;
+            final oy   = (cons.maxHeight - rh) / 2;
+            // Update directly — no setState needed; only used for gesture mapping
+            _imgRect = Rect.fromLTWH(ox, oy, rw, rh);
+            return SizedBox(
+              width:  cons.maxWidth,
+              height: cons.maxHeight,
+              child: CustomPaint(
+                painter: _SelectPainter(
+                  image:    _uiImage!,
+                  imgRect:  _imgRect,
+                  selection: _selScreen,
                 ),
               ),
-              Text(
-                '\${_fontSize.round()}',
-                style: GoogleFonts.orbitron(
-                    color: Colors.white38, fontSize: 10),
-              ),
-            ],
+            );
+          }),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.all(16),
+        child: SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed:
+                _selScreen != null ? _confirmManualSelect : null,
+            icon: const Icon(Icons.check),
+            label: const Text('Confirm'),
+            style: ElevatedButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 14)),
           ),
-          Row(
-            children: [
-              Text('Color:',
-                  style: GoogleFonts.poppins(
-                      color: Colors.white38, fontSize: 11)),
+        ),
+      ),
+    ]);
+  }
+
+  // Step 3: edit + preview
+  Widget _buildEditView() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Auto-detect badge
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A1A),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                  color: _digitColor.withValues(alpha: 0.4)),
+            ),
+            child: Row(children: [
+              Container(
+                  width: 12, height: 12,
+                  decoration: BoxDecoration(
+                      color: _digitColor, shape: BoxShape.circle)),
               const SizedBox(width: 8),
-              ..._colorOptions.map(
-                (c) => GestureDetector(
-                  onTap: () => setState(() => _textColor = c),
-                  child: Container(
-                    margin: const EdgeInsets.only(right: 7),
-                    width: 22,
-                    height: 22,
-                    decoration: BoxDecoration(
-                      color: c,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: _textColor == c
-                            ? Colors.white
-                            : Colors.white24,
-                        width: _textColor == c ? 2.5 : 1,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+              const Text('LCD auto-detect hua',
+                  style:
+                      TextStyle(color: Colors.white54, fontSize: 12)),
               const Spacer(),
-              Text('BG',
-                  style: GoogleFonts.poppins(
-                      color: Colors.white38, fontSize: 11)),
-              Transform.scale(
-                scale: 0.8,
-                child: Switch(
-                  value: _hasBg,
-                  activeColor: const Color(0xFF00E5FF),
-                  inactiveThumbColor: Colors.white38,
-                  onChanged: (v) => setState(() => _hasBg = v),
-                ),
+              GestureDetector(
+                onTap: () => setState(() {
+                  _step = _Step.select;
+                  _selA = _selB = null;
+                  _preview = null;
+                }),
+                child: const Text('Manually adjust karo',
+                    style: TextStyle(
+                        color: Color(0xFF00E5FF), fontSize: 12)),
               ),
-            ],
+            ]),
           ),
-          const SizedBox(height: 6),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _isSaving ? null : _saveAndShare,
-              icon: _isSaving
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.black),
-                    )
-                  : const Icon(Icons.share_rounded),
-              label: Text(
-                _isSaving ? 'Saving...' : 'Save & Share',
-                style: GoogleFonts.poppins(
-                    fontWeight: FontWeight.w700, fontSize: 15),
+          const SizedBox(height: 12),
+
+          // Image: preview result OR original with LCD highlight
+          if (_preview != null)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.memory(_preview!, fit: BoxFit.contain),
+            )
+          else if (_imgBytes != null)
+            _OriginalWithHighlight(
+              imgBytes: _imgBytes!,
+              uiImage: _uiImage,
+              lcdRect: _lcdRect,
+              digitColor: _digitColor,
+            ),
+
+          const SizedBox(height: 12),
+
+          // Reading input
+          TextField(
+            controller: _ctrl,
+            autofocus: true,
+            keyboardType: const TextInputType.numberWithOptions(
+                decimal: true),
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[\d.]')),
+            ],
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                letterSpacing: 3,
+                fontWeight: FontWeight.w600),
+            decoration: InputDecoration(
+              hintText: 'Nai reading type karo (e.g. 2804.5)',
+              hintStyle: const TextStyle(
+                  color: Colors.white24, fontSize: 14),
+              filled: true,
+              fillColor: const Color(0xFF1A1A1A),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide.none,
               ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF00E5FF),
-                foregroundColor: Colors.black,
-                disabledBackgroundColor: Colors.white24,
-                padding: const EdgeInsets.symmetric(vertical: 13),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(
+                    color: Color(0xFF00E5FF), width: 1.5),
+              ),
+            ),
+            onChanged: (_) => setState(() => _preview = null),
+          ),
+          const SizedBox(height: 12),
+
+          // Preview button
+          OutlinedButton.icon(
+            onPressed: _rendering ? null : _buildPreview,
+            icon: _rendering
+                ? const SizedBox(
+                    width: 16, height: 16,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.cyan))
+                : const Icon(Icons.visibility_outlined,
+                    color: Colors.cyan, size: 18),
+            label: Text(
+              _rendering ? 'Rendering...' : 'Preview Dekho',
+              style: const TextStyle(color: Colors.cyan),
+            ),
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: Color(0xFF00E5FF)),
+              padding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Save & Share
+          ElevatedButton.icon(
+            onPressed: _saving ? null : _saveShare,
+            icon: _saving
+                ? const SizedBox(
+                    width: 18, height: 18,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.black))
+                : const Icon(Icons.save_alt, size: 18),
+            label: Text(_saving ? 'Saving...' : 'Save & Share'),
+            style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Original image with LCD highlight border ──────────────────────────
+
+class _OriginalWithHighlight extends StatelessWidget {
+  final Uint8List imgBytes;
+  final ui.Image? uiImage;
+  final Rect? lcdRect;
+  final Color digitColor;
+  const _OriginalWithHighlight({
+    required this.imgBytes,
+    required this.uiImage,
+    required this.lcdRect,
+    required this.digitColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: LayoutBuilder(builder: (_, cons) {
+        final img = uiImage;
+        return Stack(children: [
+          Image.memory(imgBytes,
+              fit: BoxFit.fitWidth,
+              width: cons.maxWidth),
+          if (img != null && lcdRect != null)
+            Positioned.fill(
+              child: CustomPaint(
+                painter: _LcdBorderPainter(
+                  imageWidth:  img.width.toDouble(),
+                  imageHeight: img.height.toDouble(),
+                  lcdRect:     lcdRect!,
+                  color:       digitColor,
                 ),
               ),
             ),
-          ),
-        ],
+        ]);
+      }),
+    );
+  }
+}
+
+class _LcdBorderPainter extends CustomPainter {
+  final double imageWidth, imageHeight;
+  final Rect lcdRect;
+  final Color color;
+  const _LcdBorderPainter({
+    required this.imageWidth, required this.imageHeight,
+    required this.lcdRect, required this.color,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // size.width == displayed image width (fitWidth)
+    final sx = size.width  / imageWidth;
+    final sy = size.width  / imageWidth; // fitWidth keeps uniform scale
+    final r  = Rect.fromLTRB(
+      lcdRect.left   * sx, lcdRect.top    * sy,
+      lcdRect.right  * sx, lcdRect.bottom * sy,
+    );
+    // Glow
+    canvas.drawRect(r, Paint()
+      ..color = color.withValues(alpha: 0.5)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
+    // Sharp border
+    canvas.drawRect(r, Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2);
+  }
+
+  @override
+  bool shouldRepaint(_LcdBorderPainter o) =>
+      o.lcdRect != lcdRect || o.color != color;
+}
+
+// ─── Manual select painter ─────────────────────────────────────────────
+
+class _SelectPainter extends CustomPainter {
+  final ui.Image image;
+  final Rect imgRect;
+  final Rect? selection;
+  const _SelectPainter(
+      {required this.image, required this.imgRect, this.selection});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawImageRect(
+      image,
+      Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+      imgRect,
+      Paint(),
+    );
+    if (selection == null) return;
+    final s = selection!;
+    final dim = Paint()..color = Colors.black.withValues(alpha: 0.55);
+    canvas.drawRect(Rect.fromLTRB(0, 0, size.width, s.top), dim);
+    canvas.drawRect(
+        Rect.fromLTRB(0, s.bottom, size.width, size.height), dim);
+    canvas.drawRect(Rect.fromLTRB(0, s.top, s.left, s.bottom), dim);
+    canvas.drawRect(
+        Rect.fromLTRB(s.right, s.top, size.width, s.bottom), dim);
+    canvas.drawRect(s, Paint()
+      ..color = Colors.cyan
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2);
+    // Corner handles — filled circles users can grab
+    const hR = 10.0;
+    final hFill   = Paint()..color = Colors.cyan;
+    final hBorder = Paint()..color = Colors.black.withValues(alpha: 0.6)
+      ..style = PaintingStyle.stroke ..strokeWidth = 1.5;
+    for (final c in [s.topLeft, s.topRight, s.bottomLeft, s.bottomRight]) {
+      canvas.drawCircle(c, hR, hFill);
+      canvas.drawCircle(c, hR, hBorder);
+    }
+    // Mid-edge handles for easier vertical/horizontal resize
+    final midEdges = [
+      Offset(s.center.dx, s.top),
+      Offset(s.center.dx, s.bottom),
+      Offset(s.left,  s.center.dy),
+      Offset(s.right, s.center.dy),
+    ];
+    for (final c in midEdges) {
+      canvas.drawCircle(c, hR * 0.7, hFill);
+      canvas.drawCircle(c, hR * 0.7, hBorder);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_SelectPainter o) =>
+      o.image != image || o.imgRect != imgRect || o.selection != selection;
+}
+
+// ─── Big pick button ───────────────────────────────────────────────────
+
+class _BigBtn extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+  const _BigBtn(
+      {required this.icon,
+      required this.label,
+      required this.color,
+      required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: color.withValues(alpha: 0.5)),
+        ),
+        child: Column(children: [
+          Icon(icon, color: color, size: 32),
+          const SizedBox(height: 8),
+          Text(label,
+              style: TextStyle(
+                  color: color,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600)),
+        ]),
       ),
     );
   }

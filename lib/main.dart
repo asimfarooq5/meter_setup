@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'screens/main_screen.dart';
-import 'screens/ai_edit_screen.dart';
 import 'screens/offline_edit_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Prevent google_fonts from fetching fonts over the network — app is fully offline.
+  // Fonts already cached from a previous run will still work; new installs use
+  // the Material fallback font, which is fine.
+  GoogleFonts.config.allowRuntimeFetching = false;
   await MobileAds.instance.initialize();
   runApp(const MeterSetProApp());
 }
@@ -28,15 +31,13 @@ class MeterSetProApp extends StatelessWidget {
           secondary: Color(0xFFFFD600),
           surface: Color(0xFF1A1A1A),
         ),
-        textTheme:
-            GoogleFonts.poppinsTextTheme(ThemeData.dark().textTheme),
+        textTheme: GoogleFonts.poppinsTextTheme(ThemeData.dark().textTheme),
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFF00E5FF),
             foregroundColor: Colors.black,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
+                borderRadius: BorderRadius.circular(12)),
           ),
         ),
         snackBarTheme: const SnackBarThemeData(
@@ -46,8 +47,7 @@ class MeterSetProApp extends StatelessWidget {
       ),
       home: const MainScreen(),
       routes: {
-        '/ai-edit': (context) => const AiEditScreen(),
-        '/offline-edit': (context) => const OfflineEditScreen(),
+        '/edit': (context) => const OfflineEditScreen(),
       },
     );
   }
