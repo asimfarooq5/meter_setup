@@ -3,7 +3,6 @@ name: Build & Release APK
 on:
   push:
     branches:
-      - claude/meterset-pro-app-e9q4fy
       - claude/meterset-pro-app-3q0wt6
       - main
   workflow_dispatch:
